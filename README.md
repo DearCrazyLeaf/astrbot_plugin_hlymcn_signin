@@ -1,10 +1,11 @@
 ﻿# HLYM Server Toolkit (AstrBot Plugin)
 
-> 群聊签到 + 服务器查询（A2S/后端API）+ 数据查询 + RCON 指令
+### 群聊签到 + 服务器查询（A2S/后端API）+ 数据查询 + RCON 指令
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.12%2B-brightgreen)
 ![License](https://img.shields.io/badge/License-GPL--3.0-orange)
+
 ![views](https://count.getloli.com/get/@astrbotchuanhuatong?theme=booru-jaypee)
 
 ---
@@ -12,17 +13,16 @@
 ## ✨ 简介 | Introduction
 
 这是一个为 **AstrBot** 编写的多功能服务器工具插件，支持：
-
 - 群聊签到（HTTP API）
 - 服务器查询（后端 API 或直连 A2S）
 - 玩家列表渲染（卡片 / 文字）
 - 数据统计查询（卡片 / 文字）
 - RCON 远程指令
 
-插件面向 QQ 群聊场景设计，支持 WebUI 配置，无需 @ 机器人。
-> **IMPORTANT**  
-> 签到 / 玩家数据查询 / 统计等功能依赖你自行编写并适配的后端服务，本仓库不提供后端实现。
+插件面向 QQ 群聊场景设计，支持 WebUI 配置，无需 @ 机器人
 
+> [!IMPORTANT]  
+> 签到 / 玩家数据查询 / 统计等功能依赖你自行编写并适配的后端服务，本仓库不提供后端实现
 
 ---
 
@@ -44,7 +44,7 @@
 AstrBot/data/plugins/astrbot_plugin_hlymcn_signin
 ```
 
-重启 AstrBot 后即可在 WebUI 中看到插件。
+重启 AstrBot 后即可在 WebUI 中看到插件
 
 ---
 
