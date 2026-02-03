@@ -5,6 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.12%2B-brightgreen)
 ![License](https://img.shields.io/badge/License-GPL--3.0-orange)
+![views](https://count.getloli.com/get/@astrbotchuanhuatong?theme=booru-jaypee)
 
 ---
 
