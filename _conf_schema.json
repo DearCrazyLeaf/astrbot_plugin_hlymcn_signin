@@ -1,0 +1,160 @@
+{
+  "base_url": {
+    "description": "后端基础地址",
+    "type": "string",
+    "default": "https://example.com",
+    "hint": "例如 https://example.com"
+  },
+  "timeout_ms": {
+    "description": "HTTP超时(毫秒)",
+    "type": "int",
+    "default": 5000
+  },
+
+  "signin_path": {
+    "description": "签到接口路径",
+    "type": "string",
+    "default": "/api/v1/signinmobile",
+    "hint": "默认 /api/v1/signinmobile"
+  },
+  "stats_path": {
+    "description": "QQ查询接口路径",
+    "type": "string",
+    "default": "/api/v1/qq/stats",
+    "hint": "默认 /api/v1/qq/stats"
+  },
+  "device_type": {
+    "description": "deviceType 参数",
+    "type": "string",
+    "default": "2",
+    "hint": "默认 2"
+  },
+  "signin_type": {
+    "description": "signinType 参数",
+    "type": "string",
+    "default": "1"
+  },
+
+  "allowed_group_ids": {
+    "description": "允许群号列表",
+    "type": "list",
+    "default": [],
+    "hint": "仅列表内的群才会触发功能",
+    "items": { "type": "string" }
+  },
+  "strict_single_plain": {
+    "description": "仅当消息链只含纯文本时触发",
+    "type": "bool",
+    "default": true
+  },
+  "stats_keywords": {
+    "description": "查询指令关键词",
+    "type": "list",
+    "default": ["data", "stat", "数据", "我的数据", "查询数据"],
+    "items": { "type": "string" }
+  },
+  "stats_render_mode": {
+    "description": "查询输出模式",
+    "type": "string",
+    "default": "card",
+    "options": ["card", "text"],
+    "hint": "card 渲染卡片，text 纯文本"
+  },
+
+  "server_status_api_base_url": {
+    "description": "查服API基础地址",
+    "type": "string",
+    "default": "",
+    "hint": "留空默认使用 base_url"
+  },
+  "server_status_api_path": {
+    "description": "查服API路径",
+    "type": "string",
+    "default": "<YOUR_SERVER_STATUS_API_PATH>",
+    "hint": "查服 API 路径可自定义"
+  },
+  "server_status_api_timeout_ms": {
+    "description": "查服API超时(毫秒)",
+    "type": "int",
+    "default": 5000
+  },
+  "server_status_api_fallback": {
+    "description": "查服API失败时回退直连",
+    "type": "bool",
+    "default": true
+  },
+  "a2s_timeout_ms": {
+    "description": "A2S直连超时(毫秒)",
+    "type": "int",
+    "default": 3000
+  },
+
+  "servers": {
+    "description": "服务器别名列表",
+    "type": "list",
+    "default": [],
+    "hint": "每项格式：别名=ip:port，例如 mg=1.2.3.4:27015",
+    "items": { "type": "string" }
+  },
+  "players_limit": {
+    "description": "玩家列表显示数量",
+    "type": "int",
+    "default": 10
+  },
+  "a2s_render_mode": {
+    "description": "A2S 输出模式",
+    "type": "string",
+    "default": "image_text",
+    "options": ["image_text", "card", "text"],
+    "hint": "image_text 头图+文字，card 卡片渲染，text 纯文本"
+  },
+
+  "header_image_url": {
+    "description": "头图链接",
+    "type": "string",
+    "default": "",
+    "hint": "可填多个链接，用换行/逗号/分号分隔，用于卡片头图缓存"
+  },
+  "header_prefetch_count": {
+    "description": "头图预载数量",
+    "type": "int",
+    "default": 10,
+    "hint": "预载命令将下载的图片数量"
+  },
+  "header_cache_limit": {
+    "description": "头图缓存上限",
+    "type": "int",
+    "default": 30,
+    "hint": "缓存超过上限会随机删除"
+  },
+
+  "rcon_api_base_url": {
+    "description": "RCON API基础地址",
+    "type": "string",
+    "default": "",
+    "hint": "例如 http://127.0.0.1:9090"
+  },
+  "rcon_password": {
+    "description": "RCON 密码",
+    "type": "string",
+    "default": ""
+  },
+  "rcon_command_prefix": {
+    "description": "RCON 指令前缀",
+    "type": "string",
+    "default": "rcon",
+    "hint": "例如 rcon <别名> <命令>"
+  },
+  "rcon_timeout_ms": {
+    "description": "RCON 超时(毫秒)",
+    "type": "int",
+    "default": 5000
+  },
+
+  "debug_log": {
+    "description": "输出调试日志",
+    "type": "bool",
+    "default": false,
+    "hint": "排查问题时开启"
+  }
+}
