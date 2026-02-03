@@ -5,6 +5,7 @@ from datetime import datetime
 from io import BytesIO
 import base64
 from pathlib import Path
+from functools import partial
 import html
 import random
 import asyncio
@@ -15,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 import astrbot.api.message_components as Comp
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -34,7 +35,9 @@ class HlymcnSignIn(Star):
         self.config = config
         self._stats_cooldowns: dict[str, float] = {}
         self._http: httpx.AsyncClient | None = None
+        self._recent_header_paths: list[str] = []
 
+    # --- core helpers & config ---
     def _get_http_client(self) -> httpx.AsyncClient:
         if self._http is None:
             limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
@@ -189,6 +192,7 @@ class HlymcnSignIn(Star):
         timeout_ms = int(self._cfg("rcon_timeout_ms", 5000))
         return max(timeout_ms, 1000) / 1000.0
 
+    # --- parsing & formatting ---
     def _parse_number(self, value: Any, default: float = 0.0) -> float:
         if value is None:
             return default
@@ -200,7 +204,8 @@ class HlymcnSignIn(Star):
             return default
         try:
             return float(digits)
-        except Exception:
+        except Exception as exc:
+            self._debug("parse number failed: value=%s error=%s", value, exc)
             return default
 
     def _parse_players_field(self, value: Any) -> tuple[int, int]:
@@ -209,18 +214,21 @@ class HlymcnSignIn(Star):
         if isinstance(value, (list, tuple)) and len(value) >= 2:
             try:
                 return int(value[0]), int(value[1])
-            except Exception:
+            except Exception as exc:
+                self._debug("parse players field failed: value=%s error=%s", value, exc)
                 return 0, 0
         text = str(value).strip()
         if "/" in text:
             left, right = text.split("/", 1)
             try:
                 return int(left.strip()), int(right.strip())
-            except Exception:
+            except Exception as exc:
+                self._debug("parse players field failed: value=%s error=%s", value, exc)
                 return 0, 0
         try:
             return int(text), 0
-        except Exception:
+        except Exception as exc:
+            self._debug("parse players field failed: value=%s error=%s", value, exc)
             return 0, 0
 
     async def _fetch_server_status_api(self, host: str, port: int, timeout: float) -> tuple[Any, list[Any]] | None:
@@ -428,8 +436,9 @@ class HlymcnSignIn(Star):
                     return image_ref
         return None
 
+    # --- header cache ---
     def _header_cache_dir(self) -> Path:
-        path = Path(__file__).with_name("header_cache")
+        path = StarTools.get_data_dir() / "header_cache"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -542,10 +551,16 @@ class HlymcnSignIn(Star):
     async def _get_header_image(self, width: int, height: int) -> Image.Image | None:
         cache_items = self._list_header_cache()
         if cache_items:
-            random.shuffle(cache_items)
-            for p in cache_items:
+            recent = set(self._recent_header_paths)
+            candidates = [p for p in cache_items if str(p) not in recent]
+            if not candidates:
+                candidates = cache_items
+            random.shuffle(candidates)
+            for p in candidates:
                 try:
                     img = Image.open(p).convert("RGB")
+                    self._recent_header_paths.append(str(p))
+                    self._recent_header_paths = self._recent_header_paths[-3:]
                     return self._crop_cover(img, width, height)
                 except Exception:
                     try:
@@ -564,6 +579,8 @@ class HlymcnSignIn(Star):
         if saved and saved.exists():
             try:
                 img = Image.open(saved).convert("RGB")
+                self._recent_header_paths.append(str(saved))
+                self._recent_header_paths = self._recent_header_paths[-3:]
                 return self._crop_cover(img, width, height)
             except Exception:
                 return None
@@ -573,36 +590,31 @@ class HlymcnSignIn(Star):
         except Exception:
             return None
 
+    # --- render helpers ---
     def _load_font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-        candidates: list[str] = []
         font_dir = Path(__file__).with_name("font")
+        font_files: list[Path] = []
         if font_dir.exists():
             font_files = sorted(font_dir.glob("*.ttf")) + sorted(font_dir.glob("*.otf"))
-            if font_files:
-                if bold:
-                    for f in font_files:
-                        name = f.name.lower()
-                        if "bd" in name or "bold" in name:
-                            candidates.append(str(f))
-                    candidates.append(str(font_files[0]))
-                else:
-                    candidates.append(str(font_files[0]))
-        if bold:
-            candidates.extend(
-                [
-                    r"C:\Windows\Fonts\msyhbd.ttc",
-                    r"C:\Windows\Fonts\msyhbd.ttf",
-                ]
-            )
-        candidates.extend(
-            [
-                r"C:\Windows\Fonts\msyh.ttc",
-                r"C:\Windows\Fonts\msyh.ttf",
-            ]
-        )
+
+        candidates: list[Path] = []
+        if font_files:
+            if bold:
+                for f in font_files:
+                    name = f.name.lower()
+                    if "bd" in name or "bold" in name:
+                        candidates.append(f)
+                candidates.append(font_files[0])
+            else:
+                candidates.append(font_files[0])
+
         for path in candidates:
-            if Path(path).exists():
-                return ImageFont.truetype(path, size=size)
+            try:
+                return ImageFont.truetype(str(path), size=size)
+            except Exception as exc:
+                self._debug("load font failed: %s (%s)", path, exc)
+
+        self._debug("font not found in plugin font directory, using default")
         return ImageFont.load_default()
 
     def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
@@ -623,56 +635,13 @@ class HlymcnSignIn(Star):
             lines.append(current)
         return lines
 
-    async def _render_card_pil(
+    def _build_players_rows(
         self,
-        host: str,
-        port: int,
-        server_alias: str,
-        info: Any,
         players: list[Any],
-        now_text: str,
         max_players_show: int,
-    ) -> bytes | None:
-        scale = 1.2
-        card_width = int(820 * scale)
-        header_h = 0
-        padding = int(28 * scale)
-        outer_margin = 0
-        corner_radius = 0
-        bg_color = (44, 44, 44)
-        card_color = (58, 58, 58)
-        line_color = (75, 75, 75)
-        text_color = (245, 245, 245)
-        muted_color = (160, 166, 173)
-        label_color = (170, 176, 182)
-
-        title_font = self._load_font(int(26 * scale), bold=True)
-        section_font = self._load_font(int(20 * scale), bold=True)
-        label_font = self._load_font(int(18 * scale), bold=True)
-        value_font = self._load_font(int(18 * scale), bold=False)
-        small_font = self._load_font(int(14 * scale), bold=False)
-
-        ping_ms = float(getattr(info, "ping", 0) * 1000)
-        human_players, bot_players = self._split_players(players)
-        bot_count = len(bot_players)
-        bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
-        info_items = [
-            ("", "官方网站", "example.com"),
-            ("", "服务器IP", f"{host}:{port}"),
-            ("", "服务器人数", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
-            ("", "当前地图", getattr(info, "map_name", "")),
-            ("", "当前延迟", f"{ping_ms:.0f} ms"),
-            ("", "游戏", getattr(info, "game", "")),
-        ]
-
-        line_height = int(26 * scale)
-        players_title_height = int(26 * scale)
-        players_line_height = int(20 * scale)
-        divider_gap = int(12 * scale)
-        players_header_gap = int(8 * scale)
-        time_gap = 0
-        title_height = title_font.getbbox("测")[3]
-        players_rows: list[tuple[int, str, int, str]] = []
+    ) -> list[tuple[int, str, int, str]]:
+        human_players, _ = self._split_players(players)
+        rows: list[tuple[int, str, int, str]] = []
         if human_players:
             players_sorted = sorted(human_players, key=lambda p: getattr(p, "score", 0), reverse=True)
             for idx, p in enumerate(players_sorted[:max_players_show], 1):
@@ -681,17 +650,27 @@ class HlymcnSignIn(Star):
                 duration = int(getattr(p, "duration", 0))
                 minutes = duration // 60
                 seconds = duration % 60
-                players_rows.append((idx, name, score, f"{minutes:02d}:{seconds:02d}"))
+                rows.append((idx, name, score, f"{minutes:02d}:{seconds:02d}"))
         else:
-            players_rows.append((1, "暂无玩家", 0, ""))
+            rows.append((1, "暂无玩家", 0, ""))
+        return rows
 
-        col_gap = int(36 * scale)
+    def _calc_info_layout(
+        self,
+        info_items: list[tuple[str, str, str]],
+        label_font: ImageFont.FreeTypeFont,
+        value_font: ImageFont.FreeTypeFont,
+        card_width: int,
+        padding: int,
+        col_gap: int,
+        label_min_w: int,
+        value_gap: int,
+    ) -> SimpleNamespace:
         col_width = (card_width - padding * 2 - col_gap) // 2
-        label_min_w = int(120 * scale)
-        value_gap = int(16 * scale)
         left_items = info_items[:3]
         right_items = info_items[3:]
         row_count = max(len(left_items), len(right_items))
+
         left_label_w = label_min_w
         right_label_w = label_min_w
         for icon, label, _ in left_items:
@@ -701,10 +680,8 @@ class HlymcnSignIn(Star):
             label_text = f"{icon} {label}".strip()
             right_label_w = max(right_label_w, label_font.getbbox(label_text)[2])
 
-        value_w_left = col_width - left_label_w - value_gap
-        value_w_right = col_width - right_label_w - value_gap
-        value_w_left = max(120, value_w_left)
-        value_w_right = max(120, value_w_right)
+        value_w_left = max(120, col_width - left_label_w - value_gap)
+        value_w_right = max(120, col_width - right_label_w - value_gap)
 
         info_lines_count = 0
         for i in range(row_count):
@@ -714,93 +691,52 @@ class HlymcnSignIn(Star):
             right_lines = self._wrap_text(str(right_value), value_font, value_w_right)
             info_lines_count += max(1, len(left_lines), len(right_lines))
 
-        title_block_height = title_height + divider_gap * 2
-        info_height = info_lines_count * line_height
-        max_players_cfg = int(getattr(info, "max_players", 0) or 0)
-        base_rows = (max_players_cfg + 1) // 2 if max_players_cfg > 0 else max_players_show
-        rows_count = max(1, len(players_rows), base_rows)
-        players_bottom_padding = int(8 * scale)
-        players_height = (
-            players_title_height
-            + players_header_gap
-            + players_line_height
-            + rows_count * players_line_height
-            + players_bottom_padding
-        )
-        footer_height = small_font.getbbox("测")[3] + int(8 * scale)
-        bottom_padding = int(4 * scale)
-        footer_line_gap = max(1, int(divider_gap * 0.35))
-        footer_block_height = footer_line_gap + footer_height + bottom_padding
-        content_height = (
-            title_block_height
-            + info_height
-            + divider_gap * 2
-            + players_height
-            + time_gap
-            + footer_block_height
-        )
-        title_area_top = max(int(16 * scale), padding - int(10 * scale))
-        card_height = title_area_top + content_height
-        players_title_y = (
-            title_area_top + title_block_height + info_height + divider_gap * 3
+        return SimpleNamespace(
+            col_width=col_width,
+            left_items=left_items,
+            right_items=right_items,
+            row_count=row_count,
+            left_label_w=left_label_w,
+            right_label_w=right_label_w,
+            value_w_left=value_w_left,
+            value_w_right=value_w_right,
+            info_lines_count=info_lines_count,
         )
 
-        base = Image.new(
-            "RGB",
-            (card_width + outer_margin * 2, card_height + outer_margin * 2),
-            bg_color,
-        )
-        card = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 0))
-        card_draw = ImageDraw.Draw(card)
-        card_draw.rounded_rectangle(
-            [0, 0, card_width, card_height],
-            radius=corner_radius,
-            fill=card_color,
-        )
-
-        bg = await self._get_header_image(card_width, card_height)
-        if bg is None:
-            bg = Image.new("RGB", (card_width, card_height), (60, 60, 60))
-        bg_rgba = bg.convert("RGBA")
-        bg_blur = bg_rgba.filter(ImageFilter.GaussianBlur(2.4))
-        bg_rgba = Image.blend(bg_rgba, bg_blur, 0.42)
-        overlay = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 140))
-        bg_rgba = Image.alpha_composite(bg_rgba, overlay)
-
-        mask = Image.new("L", (card_width, card_height), 0)
-        ImageDraw.Draw(mask).rounded_rectangle(
-            [0, 0, card_width, card_height],
-            radius=corner_radius,
-            fill=255,
-        )
-        card.paste(bg_rgba, (0, 0), mask)
-
-        # 取消面板毛玻璃，仅保留整体轻微模糊
-
-        draw = ImageDraw.Draw(card)
-
-        title_text = getattr(info, "server_name", "") or ""
-        title_gap = divider_gap
-        title_block_height = title_height + title_gap * 2
-        y = title_area_top
-        title_y = y + (title_block_height - title_height) // 2 - 2
-        draw.text((padding, title_y), title_text, font=title_font, fill=text_color)
-
-        # 服务器别名徽章已移除
-        y += title_block_height
-        draw.line((padding, y, card_width - padding, y), fill=line_color, width=2)
-        y += divider_gap
+    def _draw_info_section(
+        self,
+        draw: ImageDraw.ImageDraw,
+        y: int,
+        layout: SimpleNamespace,
+        padding: int,
+        col_gap: int,
+        label_font: ImageFont.FreeTypeFont,
+        value_font: ImageFont.FreeTypeFont,
+        label_color: tuple[int, int, int],
+        text_color: tuple[int, int, int],
+        line_height: int,
+        value_gap: int,
+        ping_label: str,
+        game_label: str,
+        ping_ms: float,
+    ) -> int:
+        left_items = layout.left_items
+        right_items = layout.right_items
+        row_count = layout.row_count
+        left_label_w = layout.left_label_w
+        right_label_w = layout.right_label_w
+        value_w_left = layout.value_w_left
+        value_w_right = layout.value_w_right
 
         left_x = padding
-        right_x = padding + col_width + col_gap
+        right_x = padding + layout.col_width + col_gap
+
         def _first_line_width(value: str, max_w: int) -> int:
             lines = self._wrap_text(str(value), value_font, max_w)
             if not lines:
                 return 0
             return value_font.getbbox(lines[0])[2]
 
-        ping_label = "当前延迟"
-        game_label = "游戏"
         right_ping_value = ""
         right_game_value = ""
         for _, label, value in right_items:
@@ -873,12 +809,24 @@ class HlymcnSignIn(Star):
 
             y += line_height * row_lines
 
-        y += divider_gap
-        draw.line((padding, y, card_width - padding, y), fill=line_color, width=1)
-        y += divider_gap
+        return y
 
-        draw.text((padding, y), "玩家列表", font=label_font, fill=text_color)
-        y += players_title_height
+    def _draw_players_section(
+        self,
+        card: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        y: int,
+        players_rows: list[tuple[int, str, int, str]],
+        rows_count: int,
+        card_width: int,
+        padding: int,
+        scale: float,
+        small_font: ImageFont.FreeTypeFont,
+        text_color: tuple[int, int, int],
+        muted_color: tuple[int, int, int],
+    ) -> tuple[Image.Image, ImageDraw.ImageDraw, int]:
+        players_line_height = int(20 * scale)
+        players_header_gap = int(8 * scale)
 
         table_edge = max(int(8 * scale), padding - int(12 * scale))
         table_x = table_edge
@@ -901,7 +849,7 @@ class HlymcnSignIn(Star):
         draw.text((x_time, y), "时长", font=small_font, fill=muted_color)
         y += players_line_height + players_header_gap
 
-        row_overlay = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 0))
+        row_overlay = Image.new("RGBA", (card_width, card.height), (0, 0, 0, 0))
         row_draw = ImageDraw.Draw(row_overlay)
         row_records: list[tuple[int, str, int, str, int]] = []
         for idx, name, score, playtime in players_rows:
@@ -931,20 +879,510 @@ class HlymcnSignIn(Star):
         extra_rows = max(0, rows_count - len(players_rows))
         if extra_rows:
             y += players_line_height * extra_rows
-        y += players_bottom_padding
+        return card, draw, y
 
-        footer_font = self._load_font(int(12 * scale), bold=False)
+    def _draw_footer(
+        self,
+        draw: ImageDraw.ImageDraw,
+        card_width: int,
+        padding: int,
+        line_color: tuple[int, int, int],
+        now_text: str,
+        footer_font: ImageFont.FreeTypeFont,
+        footer_line_gap: int,
+        bottom_padding: int,
+        card_height: int,
+    ) -> None:
         footer_h = footer_font.getbbox("测")[3] + 2
         footer_y = card_height - bottom_padding - footer_h
         line_y = footer_y - footer_line_gap
         draw.line((padding, line_y, card_width - padding, line_y), fill=line_color, width=1)
         draw.text((padding, footer_y), f"查询时间：{now_text}", font=footer_font, fill=(140, 145, 150))
 
+    def _section_layout(
+        self,
+        items: list[tuple[str, str]],
+        label_font: ImageFont.FreeTypeFont,
+        value_font: ImageFont.FreeTypeFont,
+        col_width: int,
+        label_min_w: int,
+        value_gap: int,
+    ) -> SimpleNamespace:
+        label_w = label_min_w
+        for label, _ in items:
+            label_w = max(label_w, label_font.getbbox(label)[2])
+        value_w = max(120, col_width - label_w - value_gap)
+        return SimpleNamespace(label_w=label_w, value_w=value_w)
+
+    def _draw_two_col_section(
+        self,
+        draw: ImageDraw.ImageDraw,
+        y: int,
+        title: str,
+        items: list[tuple[str, str]],
+        col_width: int,
+        label_font: ImageFont.FreeTypeFont,
+        value_font: ImageFont.FreeTypeFont,
+        section_font: ImageFont.FreeTypeFont,
+        label_color: tuple[int, int, int],
+        text_color: tuple[int, int, int],
+        padding: int,
+        col_gap: int,
+        line_height: int,
+        value_gap: int,
+        layout: SimpleNamespace,
+    ) -> int:
+        draw.text((padding, y), title, font=section_font, fill=text_color)
+        y += section_font.getbbox("测")[3] + 6
+
+        left_items = items[::2]
+        right_items = items[1::2]
+        row_count = max(len(left_items), len(right_items))
+
+        left_x = padding
+        right_x = padding + col_width + col_gap
+        label_w = layout.label_w
+        value_w = layout.value_w
+
+        for i in range(row_count):
+            left_label, left_value = left_items[i] if i < len(left_items) else ("", "")
+            right_label, right_value = right_items[i] if i < len(right_items) else ("", "")
+
+            if left_label:
+                draw.text((left_x, y), left_label, font=label_font, fill=label_color)
+            if right_label:
+                draw.text((right_x, y), right_label, font=label_font, fill=label_color)
+
+            left_lines = self._wrap_text(str(left_value), value_font, value_w)
+            right_lines = self._wrap_text(str(right_value), value_font, value_w)
+            if left_lines:
+                draw.text(
+                    (left_x + label_w + value_gap, y),
+                    left_lines[0],
+                    font=value_font,
+                    fill=text_color,
+                )
+            if right_lines:
+                draw.text(
+                    (right_x + label_w + value_gap, y),
+                    right_lines[0],
+                    font=value_font,
+                    fill=text_color,
+                )
+
+            y += line_height
+
+        return y
+
+    # --- render sizing ---
+    def _estimate_card_size(
+        self,
+        host: str,
+        port: int,
+        info: Any,
+        players: list[Any],
+        max_players_show: int,
+        scale: float = 1.2,
+    ) -> tuple[int, int]:
+        card_width = int(820 * scale)
+        padding = int(28 * scale)
+        line_height = int(26 * scale)
+        players_title_height = int(26 * scale)
+        players_line_height = int(20 * scale)
+        divider_gap = int(12 * scale)
+        players_header_gap = int(8 * scale)
+        title_font = self._load_font(int(26 * scale), bold=True)
+        label_font = self._load_font(int(18 * scale), bold=True)
+        value_font = self._load_font(int(18 * scale), bold=False)
+        small_font = self._load_font(int(14 * scale), bold=False)
+
+        ping_ms = float(getattr(info, "ping", 0) * 1000)
+        _, bot_players = self._split_players(players)
+        bot_count = len(bot_players)
+        bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
+        info_items = [
+            ("", "????", "example.com"),
+            ("", "???IP", f"{host}:{port}"),
+            ("", "?????", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
+            ("", "????", getattr(info, "map_name", "")),
+            ("", "????", f"{ping_ms:.0f} ms"),
+            ("", "??", getattr(info, "game", "")),
+        ]
+
+        players_rows = self._build_players_rows(players, max_players_show)
+
+        col_gap = int(36 * scale)
+        label_min_w = int(120 * scale)
+        value_gap = int(16 * scale)
+        info_layout = self._calc_info_layout(
+            info_items,
+            label_font,
+            value_font,
+            card_width,
+            padding,
+            col_gap,
+            label_min_w,
+            value_gap,
+        )
+        info_lines_count = info_layout.info_lines_count
+
+        title_height = title_font.getbbox("?")[3]
+        title_block_height = title_height + divider_gap * 2
+        info_height = info_lines_count * line_height
+        max_players_cfg = int(getattr(info, "max_players", 0) or 0)
+        base_rows = (max_players_cfg + 1) // 2 if max_players_cfg > 0 else max_players_show
+        rows_count = max(1, len(players_rows), base_rows)
+        players_bottom_padding = int(8 * scale)
+        players_height = (
+            players_title_height
+            + players_header_gap
+            + players_line_height
+            + rows_count * players_line_height
+            + players_bottom_padding
+        )
+        footer_height = small_font.getbbox("?")[3] + int(8 * scale)
+        bottom_padding = int(4 * scale)
+        footer_line_gap = max(1, int(divider_gap * 0.35))
+        footer_block_height = footer_line_gap + footer_height + bottom_padding
+        content_height = (
+            title_block_height
+            + info_height
+            + divider_gap * 2
+            + players_height
+            + footer_block_height
+        )
+        title_area_top = max(int(16 * scale), padding - int(10 * scale))
+        card_height = title_area_top + content_height
+        return card_width, card_height
+
+    def _estimate_stats_card_size(
+        self,
+        title: str,
+        qq_id: str,
+        steam_id: str,
+        credits: Any,
+        kd: str | None,
+        winrate: str | None,
+        kills: int,
+        first_blood: int,
+        deaths: int,
+        grenades: int,
+        shoots: int,
+        mvp: int,
+        rounds_total: int,
+        round_win: int,
+        round_lose: int,
+        total_time: str,
+        ct_time: str,
+        t_time: str,
+        spec_time: str,
+        alive_time: str,
+        dead_time: str,
+    ) -> tuple[int, int]:
+        card_width = 820
+        padding = 28
+        col_gap = 36
+        col_width = (card_width - padding * 2 - col_gap) // 2
+        label_min_w = 120
+        value_gap = 16
+        line_height = 26
+        divider_gap = 12
+        time_gap = divider_gap * 3
+        bottom_padding = 12
+
+        title_font = self._load_font(26, bold=True)
+        section_font = self._load_font(20, bold=True)
+        label_font = self._load_font(18, bold=True)
+        value_font = self._load_font(18, bold=False)
+        small_font = self._load_font(14, bold=False)
+
+        title_text = title or "??????"
+        account_items = [
+            ("????", title_text),
+            ("QQ?", qq_id),
+            ("Steam64", steam_id),
+            ("?????", str(credits)),
+        ]
+        stats_items = [
+            ("K/D", kd or "??"),
+            ("??", winrate or "??"),
+            ("???", str(kills)),
+            ("???", str(first_blood)),
+            ("???", str(deaths)),
+            ("???", str(grenades)),
+            ("???", str(shoots)),
+            ("MVP", str(mvp)),
+            ("???", str(rounds_total)),
+            ("?/?", f"{round_win}/{round_lose}"),
+        ]
+        time_items = [
+            ("????", alive_time),
+            ("CT??", ct_time),
+            ("T??", t_time),
+            ("???", total_time),
+            ("????", spec_time),
+            ("????", dead_time),
+        ]
+
+        title_height = title_font.getbbox("?")[3]
+        section_title_height = section_font.getbbox("?")[3]
+        footer_height = small_font.getbbox("?")[3] + 8
+
+        def _section_height(items: list[tuple[str, str]]) -> int:
+            rows = (len(items) + 1) // 2
+            return section_title_height + 6 + rows * line_height
+
+        content_height = (
+            title_height
+            + 8
+            + divider_gap
+            + _section_height(account_items)
+            + divider_gap * 2 + 2
+            + _section_height(stats_items)
+            + divider_gap * 2 + 2
+            + _section_height(time_items)
+            + divider_gap
+            + time_gap
+            + footer_height
+            + bottom_padding
+        )
+        card_height = padding * 2 + content_height
+        return card_width, card_height
+
+    # --- server status card rendering ---
+    async def _render_card_pil(
+        self,
+        host: str,
+        port: int,
+        server_alias: str,
+        info: Any,
+        players: list[Any],
+        now_text: str,
+        max_players_show: int,
+    ) -> bytes | None:
+        card_width, card_height = self._estimate_card_size(host, port, info, players, max_players_show)
+        header_image = await self._get_header_image(card_width, card_height)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(
+                self._render_card_pil_sync,
+                host,
+                port,
+                server_alias,
+                info,
+                players,
+                now_text,
+                max_players_show,
+                header_image,
+            ),
+        )
+
+    def _render_card_pil_sync(
+        self,
+        host: str,
+        port: int,
+        server_alias: str,
+        info: Any,
+        players: list[Any],
+        now_text: str,
+        max_players_show: int,
+        header_image: Image.Image | None,
+    ) -> bytes | None:
+        scale = 1.2
+        card_width = int(820 * scale)
+        header_h = 0
+        padding = int(28 * scale)
+        outer_margin = 0
+        corner_radius = 0
+        bg_color = (44, 44, 44)
+        card_color = (58, 58, 58)
+        line_color = (75, 75, 75)
+        text_color = (245, 245, 245)
+        muted_color = (160, 166, 173)
+        label_color = (170, 176, 182)
+
+        title_font = self._load_font(int(26 * scale), bold=True)
+        section_font = self._load_font(int(20 * scale), bold=True)
+        label_font = self._load_font(int(18 * scale), bold=True)
+        value_font = self._load_font(int(18 * scale), bold=False)
+        small_font = self._load_font(int(14 * scale), bold=False)
+
+        ping_ms = float(getattr(info, "ping", 0) * 1000)
+        _, bot_players = self._split_players(players)
+        bot_count = len(bot_players)
+        bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
+        info_items = [
+            ("", "官方网站", "example.com"),
+            ("", "服务器IP", f"{host}:{port}"),
+            ("", "服务器人数", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
+            ("", "当前地图", getattr(info, "map_name", "")),
+            ("", "当前延迟", f"{ping_ms:.0f} ms"),
+            ("", "游戏", getattr(info, "game", "")),
+        ]
+
+        line_height = int(26 * scale)
+        players_title_height = int(26 * scale)
+        players_line_height = int(20 * scale)
+        divider_gap = int(12 * scale)
+        players_header_gap = int(8 * scale)
+        time_gap = 0
+        title_height = title_font.getbbox("测")[3]
+        players_rows = self._build_players_rows(players, max_players_show)
+
+        col_gap = int(36 * scale)
+        label_min_w = int(120 * scale)
+        value_gap = int(16 * scale)
+        info_layout = self._calc_info_layout(
+            info_items,
+            label_font,
+            value_font,
+            card_width,
+            padding,
+            col_gap,
+            label_min_w,
+            value_gap,
+        )
+        info_lines_count = info_layout.info_lines_count
+
+        title_block_height = title_height + divider_gap * 2
+        info_height = info_lines_count * line_height
+        max_players_cfg = int(getattr(info, "max_players", 0) or 0)
+        base_rows = (max_players_cfg + 1) // 2 if max_players_cfg > 0 else max_players_show
+        rows_count = max(1, len(players_rows), base_rows)
+        players_bottom_padding = int(8 * scale)
+        players_height = (
+            players_title_height
+            + players_header_gap
+            + players_line_height
+            + rows_count * players_line_height
+            + players_bottom_padding
+        )
+        footer_height = small_font.getbbox("测")[3] + int(8 * scale)
+        bottom_padding = int(4 * scale)
+        footer_line_gap = max(1, int(divider_gap * 0.35))
+        footer_block_height = footer_line_gap + footer_height + bottom_padding
+        content_height = (
+            title_block_height
+            + info_height
+            + divider_gap * 2
+            + players_height
+            + time_gap
+            + footer_block_height
+        )
+        title_area_top = max(int(16 * scale), padding - int(10 * scale))
+        card_height = title_area_top + content_height
+        players_title_y = (
+            title_area_top + title_block_height + info_height + divider_gap * 3
+        )
+
+        base = Image.new(
+            "RGB",
+            (card_width + outer_margin * 2, card_height + outer_margin * 2),
+            bg_color,
+        )
+        card = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 0))
+        card_draw = ImageDraw.Draw(card)
+        card_draw.rounded_rectangle(
+            [0, 0, card_width, card_height],
+            radius=corner_radius,
+            fill=card_color,
+        )
+
+        bg = header_image
+        if bg is not None and (bg.width != card_width or bg.height != card_height):
+            bg = self._crop_cover(bg, card_width, card_height)
+        if bg is None:
+            bg = Image.new("RGB", (card_width, card_height), (60, 60, 60))
+        bg_rgba = bg.convert("RGBA")
+        bg_blur = bg_rgba.filter(ImageFilter.GaussianBlur(2.4))
+        bg_rgba = Image.blend(bg_rgba, bg_blur, 0.42)
+        overlay = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 140))
+        bg_rgba = Image.alpha_composite(bg_rgba, overlay)
+
+        mask = Image.new("L", (card_width, card_height), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            [0, 0, card_width, card_height],
+            radius=corner_radius,
+            fill=255,
+        )
+        card.paste(bg_rgba, (0, 0), mask)
+
+        # 取消面板毛玻璃，仅保留整体轻微模糊
+
+        draw = ImageDraw.Draw(card)
+
+        title_text = getattr(info, "server_name", "") or ""
+        title_gap = divider_gap
+        title_block_height = title_height + title_gap * 2
+        y = title_area_top
+        title_y = y + (title_block_height - title_height) // 2 - 2
+        draw.text((padding, title_y), title_text, font=title_font, fill=text_color)
+
+        # 服务器别名徽章已移除
+        y += title_block_height
+        draw.line((padding, y, card_width - padding, y), fill=line_color, width=2)
+        y += divider_gap
+
+        ping_label = "当前延迟"
+        game_label = "游戏"
+        y = self._draw_info_section(
+            draw,
+            y,
+            info_layout,
+            padding,
+            col_gap,
+            label_font,
+            value_font,
+            label_color,
+            text_color,
+            line_height,
+            value_gap,
+            ping_label,
+            game_label,
+            ping_ms,
+        )
+
+        y += divider_gap
+        draw.line((padding, y, card_width - padding, y), fill=line_color, width=1)
+        y += divider_gap
+
+        draw.text((padding, y), "玩家列表", font=label_font, fill=text_color)
+        y += players_title_height
+        card, draw, y = self._draw_players_section(
+            card,
+            draw,
+            y,
+            players_rows,
+            rows_count,
+            card_width,
+            padding,
+            scale,
+            small_font,
+            text_color,
+            muted_color,
+        )
+        y += players_bottom_padding
+
+        footer_font = self._load_font(int(12 * scale), bold=False)
+        self._draw_footer(
+            draw,
+            card_width,
+            padding,
+            line_color,
+            now_text,
+            footer_font,
+            footer_line_gap,
+            bottom_padding,
+            card_height,
+        )
+
         base.paste(card, (outer_margin, outer_margin), card)
         output = BytesIO()
         base.save(output, format="JPEG", quality=85, optimize=True)
         return output.getvalue()
 
+    # --- HTML rendering (fallback) ---
     async def _try_html_render(self, html_content: str) -> tuple[str | None, str]:
         render_func = getattr(self, "html_render", None)
         if not callable(render_func):
@@ -1638,6 +2076,7 @@ class HlymcnSignIn(Star):
 
         yield event.plain_result(response)
 
+    # --- stats card rendering ---
     async def _render_stats_card_pil(
         self,
         title: str,
@@ -1662,6 +2101,87 @@ class HlymcnSignIn(Star):
         alive_time: str,
         dead_time: str,
         now_text: str,
+    ) -> bytes | None:
+        card_width, card_height = self._estimate_stats_card_size(
+            title,
+            qq_id,
+            steam_id,
+            credits,
+            kd,
+            winrate,
+            kills,
+            first_blood,
+            deaths,
+            grenades,
+            shoots,
+            mvp,
+            rounds_total,
+            round_win,
+            round_lose,
+            total_time,
+            ct_time,
+            t_time,
+            spec_time,
+            alive_time,
+            dead_time,
+        )
+        header_image = await self._get_header_image(card_width, card_height)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(
+                self._render_stats_card_pil_sync,
+                title,
+                qq_id,
+                steam_id,
+                credits,
+                kd,
+                winrate,
+                kills,
+                first_blood,
+                deaths,
+                grenades,
+                shoots,
+                mvp,
+                rounds_total,
+                round_win,
+                round_lose,
+                total_time,
+                ct_time,
+                t_time,
+                spec_time,
+                alive_time,
+                dead_time,
+                now_text,
+                header_image,
+            ),
+        )
+
+    def _render_stats_card_pil_sync(
+        self,
+        title: str,
+        qq_id: str,
+        steam_id: str,
+        credits: Any,
+        kd: str | None,
+        winrate: str | None,
+        kills: int,
+        first_blood: int,
+        deaths: int,
+        grenades: int,
+        shoots: int,
+        mvp: int,
+        rounds_total: int,
+        round_win: int,
+        round_lose: int,
+        total_time: str,
+        ct_time: str,
+        t_time: str,
+        spec_time: str,
+        alive_time: str,
+        dead_time: str,
+        now_text: str,
+        header_image: Image.Image | None,
     ) -> bytes | None:
         card_width = 820
         padding = 28
@@ -1748,7 +2268,9 @@ class HlymcnSignIn(Star):
         )
         card = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 0))
 
-        bg = await self._get_header_image(card_width, card_height)
+        bg = header_image
+        if bg is not None and (bg.width != card_width or bg.height != card_height):
+            bg = self._crop_cover(bg, card_width, card_height)
         if bg is None:
             bg = Image.new("RGB", (card_width, card_height), (58, 58, 58))
         bg_rgba = bg.convert("RGBA")
@@ -1773,44 +2295,67 @@ class HlymcnSignIn(Star):
         y += title_height + 8
         draw.line((padding, y, card_width - padding, y), fill=line_color, width=2)
         y += divider_gap
+        account_layout = self._section_layout(account_items, label_font, value_font, col_width, label_min_w, value_gap)
+        stats_layout = self._section_layout(stats_items, label_font, value_font, col_width, label_min_w, value_gap)
+        time_layout = self._section_layout(time_items, label_font, value_font, col_width, label_min_w, value_gap)
 
-        def _draw_section(
-            section_title: str,
-            items: list[tuple[str, str]],
-            start_y: int,
-        ) -> int:
-            draw.text((padding, start_y), section_title, fill=text_color, font=section_font)
-            y_local = start_y + section_title_height + 6
-            label_w = label_min_w
-            for label, _ in items:
-                label_w = max(label_w, label_font.getbbox(label)[2])
-            value_w = max(120, col_width - label_w - value_gap)
-            left_x = padding
-            right_x = padding + col_width + col_gap
-            rows = (len(items) + 1) // 2
-            for row in range(rows):
-                for col in range(2):
-                    idx = row * 2 + col
-                    if idx >= len(items):
-                        continue
-                    label, value = items[idx]
-                    x = left_x if col == 0 else right_x
-                    draw.text((x, y_local), label, fill=label_color, font=label_font)
-                    vx = x + label_w + value_gap
-                    value_lines = self._wrap_text(str(value), value_font, value_w)
-                    draw.text((vx, y_local), value_lines[0], fill=text_color, font=value_font)
-                y_local += line_height
-            return y_local
-
-        y = _draw_section("账号信息", account_items, y)
+        y = self._draw_two_col_section(
+            draw,
+            y,
+            "账号信息",
+            account_items,
+            col_width,
+            label_font,
+            value_font,
+            section_font,
+            label_color,
+            text_color,
+            padding,
+            col_gap,
+            line_height,
+            value_gap,
+            account_layout,
+        )
         y += divider_gap
         draw.line((padding, y, card_width - padding, y), fill=line_color, width=1)
         y += divider_gap
-        y = _draw_section("数据统计", stats_items, y)
+        y = self._draw_two_col_section(
+            draw,
+            y,
+            "数据统计",
+            stats_items,
+            col_width,
+            label_font,
+            value_font,
+            section_font,
+            label_color,
+            text_color,
+            padding,
+            col_gap,
+            line_height,
+            value_gap,
+            stats_layout,
+        )
         y += divider_gap
         draw.line((padding, y, card_width - padding, y), fill=line_color, width=1)
         y += divider_gap
-        y = _draw_section("时长统计", time_items, y)
+        y = self._draw_two_col_section(
+            draw,
+            y,
+            "时长统计",
+            time_items,
+            col_width,
+            label_font,
+            value_font,
+            section_font,
+            label_color,
+            text_color,
+            padding,
+            col_gap,
+            line_height,
+            value_gap,
+            time_layout,
+        )
         footer_font = self._load_font(12, bold=False)
         footer_h = footer_font.getbbox("测")[3] + 2
         footer_y = card_height - bottom_padding - footer_h
@@ -1824,6 +2369,7 @@ class HlymcnSignIn(Star):
         return out.getvalue()
 
 
+    # --- request handlers ---
     async def _handle_a2s_query(self, event: AstrMessageEvent, name: str, addr: str):
         try:
             host, port = self._parse_address(addr)
