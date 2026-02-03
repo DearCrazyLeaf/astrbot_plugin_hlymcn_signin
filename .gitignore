@@ -1,0 +1,7 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Image/render cache
+header_cache/
