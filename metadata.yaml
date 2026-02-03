@@ -1,5 +1,5 @@
 ﻿name: HLYM服务器工具
-author: "hlymcn"
+author: "HLYMCN"
 version: "0.6.5"
-description: "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具"
+description: "一个为HLYM社区定向开发的服务器工具插件，提供基础的查询功能，如果需要使用捆绑的更多功能需要自行适配后端系统"
 license: "GPL-3.0"
