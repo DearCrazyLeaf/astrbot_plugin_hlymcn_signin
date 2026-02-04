@@ -17,7 +17,7 @@
 - 服务器查询（后端 API 或直连 A2S）
 - 玩家列表渲染（卡片 / 文字）
 - 数据统计查询（卡片 / 文字）
-- RCON 远程指令
+- RCON 远程指令（后端 API）
 
 插件面向 QQ 群聊场景设计，支持 WebUI 配置，无需 @ 机器人
 
@@ -69,6 +69,15 @@ AstrBot WebUI -> 插件 -> 插件配置
 | a2s_render_mode | 查服输出模式（card / image_text / text） |
 | stats_render_mode | 数据输出模式（card / text） |
 
+### 🖼️ 头图配置
+
+| 配置项 | 说明 |
+|--------|------|
+| header_image_url | 头图链接（支持多条，用换行/逗号/分号分隔） |
+| header_prefetch_count | 预载图片数量 |
+| header_cache_limit | 头图缓存上限 |
+| header_image_max_bytes | 头图下载最大字节数（默认 3MB） |
+
 ### ✅ RCON 配置
 
 | 配置项 | 说明 |
@@ -76,6 +85,7 @@ AstrBot WebUI -> 插件 -> 插件配置
 | rcon_api_base_url | RCON API 基础地址 |
 | rcon_password | RCON 密码 |
 | rcon_command_prefix | RCON 指令前缀（默认 rcon） |
+| rcon_admin_ids | 允许使用 RCON 的管理员 QQ 列表（为空则禁用 RCON） |
 
 ---
 

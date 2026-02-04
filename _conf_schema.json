@@ -127,6 +127,12 @@
     "default": 30,
     "hint": "缓存超过上限会随机删除"
   },
+  "header_image_max_bytes": {
+    "description": "头图下载最大字节数",
+    "type": "int",
+    "default": 3000000,
+    "hint": "默认 3000000（约3MB）"
+  },
 
   "rcon_api_base_url": {
     "description": "RCON API基础地址",
@@ -138,6 +144,13 @@
     "description": "RCON 密码",
     "type": "string",
     "default": ""
+  },
+  "rcon_admin_ids": {
+    "description": "RCON 管理员QQ列表",
+    "type": "list",
+    "default": [],
+    "hint": "为空则不限制，建议配置为管理员QQ",
+    "items": { "type": "string" }
   },
   "rcon_command_prefix": {
     "description": "RCON 指令前缀",

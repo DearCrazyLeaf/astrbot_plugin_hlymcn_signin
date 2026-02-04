@@ -6,7 +6,6 @@ from io import BytesIO
 import base64
 from pathlib import Path
 from functools import partial
-import html
 import random
 import asyncio
 import a2s
@@ -27,7 +26,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.7.0",
+    "0.7.1",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -124,9 +123,9 @@ class HlymcnSignIn(Star):
         message_obj = getattr(event, "message_obj", None)
         chain = getattr(message_obj, "message", None)
         if chain is None:
-            return True
+            return False
         if not isinstance(chain, list):
-            return True
+            return False
         if not chain:
             return False
 
@@ -191,6 +190,26 @@ class HlymcnSignIn(Star):
     def _rcon_timeout(self) -> float:
         timeout_ms = int(self._cfg("rcon_timeout_ms", 5000))
         return max(timeout_ms, 1000) / 1000.0
+
+    def _rcon_admin_ids(self) -> set[str]:
+        raw = self._cfg("rcon_admin_ids", [])
+        if isinstance(raw, str):
+            parts = []
+            for token in raw.replace("|", "\n").replace(";", "\n").replace(",", "\n").splitlines():
+                t = token.strip()
+                if t:
+                    parts.append(t)
+            return set(parts)
+        if isinstance(raw, list):
+            return {str(x).strip() for x in raw if str(x).strip()}
+        return set()
+
+    def _is_rcon_admin(self, event: AstrMessageEvent) -> bool:
+        allowed = self._rcon_admin_ids()
+        if not allowed:
+            return False
+        user_id = self._extract_user_id(event)
+        return bool(user_id) and user_id in allowed
 
     # --- parsing & formatting ---
     def _parse_number(self, value: Any, default: float = 0.0) -> float:
@@ -316,11 +335,17 @@ class HlymcnSignIn(Star):
         return info, players
 
     async def _handle_rcon_command(self, event: AstrMessageEvent, name: str, addr: str, command: str):
+        if not self._is_rcon_admin(event):
+            yield event.plain_result("RCON 仅管理员可用")
+            return
+
         base = self._rcon_api_base_url()
         password = self._rcon_password()
         if not base or not password:
             yield event.plain_result("RCON 未配置，请设置 rcon_api_base_url 与 rcon_password")
             return
+        if base.startswith("http://"):
+            logger.warning("rcon_api_base_url 使用 http 明文传输，存在泄露风险")
 
         try:
             host, port = self._parse_address(addr)
@@ -405,10 +430,15 @@ class HlymcnSignIn(Star):
         if ":" in addr:
             host, port_str = addr.rsplit(":", 1)
             host = host.strip()
+            if not host:
+                raise ValueError("主机不能为空")
             if not port_str.isdigit():
                 raise ValueError("端口必须是数字")
             return host, int(port_str)
-        return addr.strip(), 27015
+        host = addr.strip()
+        if not host:
+            raise ValueError("主机不能为空")
+        return host, 27015
 
     def _is_http_url(self, text: str) -> bool:
         return text.startswith("http://") or text.startswith("https://")
@@ -475,8 +505,11 @@ class HlymcnSignIn(Star):
     async def _download_header_bytes(self, url: str) -> bytes | None:
         if not url or not self._is_http_url(url):
             return None
+        max_bytes = int(self._cfg("header_image_max_bytes", 3_000_000))
         try:
-            async with httpx.AsyncClient(
+            client = self._get_http_client()
+            resp = await client.get(
+                url,
                 timeout=8,
                 follow_redirects=True,
                 headers={
@@ -487,15 +520,26 @@ class HlymcnSignIn(Star):
                     ),
                     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                 },
-            ) as client:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    self._debug("header download status=%s url=%s", resp.status_code, url)
-                    return None
-                if not resp.content:
-                    self._debug("header download empty content url=%s", url)
-                    return None
-                return resp.content
+            )
+            if resp.status_code != 200:
+                self._debug("header download status=%s url=%s", resp.status_code, url)
+                return None
+            content_length = resp.headers.get("Content-Length")
+            if content_length:
+                try:
+                    length = int(content_length)
+                    if length > max_bytes:
+                        self._debug("header download too large: %s bytes", length)
+                        return None
+                except Exception:
+                    pass
+            if not resp.content:
+                self._debug("header download empty content url=%s", url)
+                return None
+            if len(resp.content) > max_bytes:
+                self._debug("header download too large (body): %s bytes", len(resp.content))
+                return None
+            return resp.content
         except Exception as exc:
             self._debug("header download failed: %s", exc)
         return None
@@ -1001,12 +1045,12 @@ class HlymcnSignIn(Star):
         bot_count = len(bot_players)
         bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
         info_items = [
-            ("", "????", "example.com"),
-            ("", "???IP", f"{host}:{port}"),
-            ("", "?????", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
-            ("", "????", getattr(info, "map_name", "")),
-            ("", "????", f"{ping_ms:.0f} ms"),
-            ("", "??", getattr(info, "game", "")),
+            ("", "官方网站", "example.com"),
+            ("", "服务器IP", f"{host}:{port}"),
+            ("", "服务器人数", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
+            ("", "当前地图", getattr(info, "map_name", "")),
+            ("", "当前延迟", f"{ping_ms:.0f} ms"),
+            ("", "游戏", getattr(info, "game", "")),
         ]
 
         players_rows = self._build_players_rows(players, max_players_show)
@@ -1026,7 +1070,7 @@ class HlymcnSignIn(Star):
         )
         info_lines_count = info_layout.info_lines_count
 
-        title_height = title_font.getbbox("?")[3]
+        title_height = title_font.getbbox("测")[3]
         title_block_height = title_height + divider_gap * 2
         info_height = info_lines_count * line_height
         max_players_cfg = int(getattr(info, "max_players", 0) or 0)
@@ -1040,7 +1084,7 @@ class HlymcnSignIn(Star):
             + rows_count * players_line_height
             + players_bottom_padding
         )
-        footer_height = small_font.getbbox("?")[3] + int(8 * scale)
+        footer_height = small_font.getbbox("测")[3] + int(8 * scale)
         bottom_padding = int(4 * scale)
         footer_line_gap = max(1, int(divider_gap * 0.35))
         footer_block_height = footer_line_gap + footer_height + bottom_padding
@@ -1096,37 +1140,37 @@ class HlymcnSignIn(Star):
         value_font = self._load_font(18, bold=False)
         small_font = self._load_font(14, bold=False)
 
-        title_text = title or "??????"
+        title_text = title or "玩家数据查询"
         account_items = [
-            ("????", title_text),
-            ("QQ?", qq_id),
+            ("玩家名称", title_text),
+            ("QQ号", qq_id),
             ("Steam64", steam_id),
-            ("?????", str(credits)),
+            ("正式服积分", str(credits)),
         ]
         stats_items = [
-            ("K/D", kd or "??"),
-            ("??", winrate or "??"),
-            ("???", str(kills)),
-            ("???", str(first_blood)),
-            ("???", str(deaths)),
-            ("???", str(grenades)),
-            ("???", str(shoots)),
+            ("K/D", kd or "暂无"),
+            ("胜率", winrate or "暂无"),
+            ("击杀数", str(kills)),
+            ("首杀数", str(first_blood)),
+            ("死亡数", str(deaths)),
+            ("投掷物", str(grenades)),
+            ("开火数", str(shoots)),
             ("MVP", str(mvp)),
-            ("???", str(rounds_total)),
-            ("?/?", f"{round_win}/{round_lose}"),
+            ("回合数", str(rounds_total)),
+            ("胜/负", f"{round_win}/{round_lose}"),
         ]
         time_items = [
-            ("????", alive_time),
-            ("CT??", ct_time),
-            ("T??", t_time),
-            ("???", total_time),
-            ("????", spec_time),
-            ("????", dead_time),
+            ("存活时长", alive_time),
+            ("CT时长", ct_time),
+            ("T时长", t_time),
+            ("总时长", total_time),
+            ("旁观时长", spec_time),
+            ("死亡时长", dead_time),
         ]
 
-        title_height = title_font.getbbox("?")[3]
-        section_title_height = section_font.getbbox("?")[3]
-        footer_height = small_font.getbbox("?")[3] + 8
+        title_height = title_font.getbbox("测")[3]
+        section_title_height = section_font.getbbox("测")[3]
+        footer_height = small_font.getbbox("测")[3] + 8
 
         def _section_height(items: list[tuple[str, str]]) -> int:
             rows = (len(items) + 1) // 2
@@ -1189,8 +1233,8 @@ class HlymcnSignIn(Star):
         max_players_show: int,
         header_image: Image.Image | None,
     ) -> bytes | None:
+        card_width, card_height = self._estimate_card_size(host, port, info, players, max_players_show)
         scale = 1.2
-        card_width = int(820 * scale)
         header_h = 0
         padding = int(28 * scale)
         outer_margin = 0
@@ -1382,323 +1426,6 @@ class HlymcnSignIn(Star):
         base.save(output, format="JPEG", quality=85, optimize=True)
         return output.getvalue()
 
-    # --- HTML rendering (fallback) ---
-    async def _try_html_render(self, html_content: str) -> tuple[str | None, str]:
-        render_func = getattr(self, "html_render", None)
-        if not callable(render_func):
-            return None, "html_render not available"
-
-        options = {
-            "full_page": True,
-            "type": "png",
-            "scale": "device",
-            "device_scale_factor_level": "normal",
-        }
-
-        try_orders = (
-            ("legacy", lambda: render_func(html_content, {}, True, options)),
-            ("keyword", lambda: render_func(html_content, {}, return_url=True, options=options)),
-            ("simple", lambda: render_func(html_content, {}, options=options)),
-        )
-
-        last_error = ""
-        for label, call in try_orders:
-            try:
-                result = await call()
-                image_ref = self._extract_image_ref(result)
-                if image_ref:
-                    return image_ref, f"ok via {label}"
-                last_error = f"{label} returned no image ref"
-            except TypeError:
-                last_error = f"{label} signature not supported"
-                continue
-            except Exception as exc:
-                last_error = f"{label} error: {exc}"
-                break
-
-        return None, last_error or "unknown error"
-
-    def _build_html_card(
-        self,
-        host: str,
-        port: int,
-        info: Any,
-        players_html: str,
-        header_url: str,
-        now_text: str,
-    ) -> str:
-        server_name = html.escape(getattr(info, "server_name", "") or "")
-        game = html.escape(getattr(info, "game", "") or "")
-        map_name = html.escape(getattr(info, "map_name", "") or "")
-        player_count = getattr(info, "player_count", 0)
-        max_players = getattr(info, "max_players", 0)
-        ping_ms = f"{getattr(info, 'ping', 0) * 1000:.0f}"
-        host_safe = html.escape(f"{host}:{port}")
-
-        header_html = ""
-        if header_url and self._is_http_url(header_url):
-            header_html = (
-                "<div class=\"header\">"
-                f"<img src=\"{header_url}\" alt=\"header\" />"
-                "<div class=\"header-mask\"></div>"
-                "</div>"
-            )
-        else:
-            header_html = (
-                "<div class=\"header no-image\">"
-                "<div class=\"header-title\">服务器状态更新</div>"
-                "</div>"
-            )
-
-        return f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    :root {{
-      --card-width: 760px;
-      --bg: #2c2c2c;
-      --card: #3a3a3a;
-      --text: #f2f2f2;
-      --muted: #a0a6ad;
-      --line: #4b4b4b;
-      --chip: #4a4a4a;
-      --chip-border: #5a5a5a;
-      --accent: #4ea1ff;
-    }}
-    * {{
-      box-sizing: border-box;
-    }}
-    html, body {{
-      margin: 0;
-      padding: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: "Microsoft YaHei", "Noto Sans SC", "PingFang SC", sans-serif;
-    }}
-    .card {{
-      width: var(--card-width);
-      background: var(--card);
-      border-radius: 18px;
-      overflow: hidden;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-    }}
-    .header {{
-      position: relative;
-      height: 260px;
-      background: #444;
-    }}
-    .header.no-image {{
-      height: 180px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: linear-gradient(120deg, #3c3c3c 0%, #2f2f2f 100%);
-    }}
-    .header-title {{
-      font-size: 26px;
-      font-weight: 700;
-      letter-spacing: 1px;
-    }}
-    .header img {{
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }}
-    .header-mask {{
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.65) 100%);
-    }}
-    .content {{
-      padding: 22px 26px 18px;
-    }}
-    .title {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 22px;
-      font-weight: 700;
-    }}
-    .badge {{
-      padding: 4px 12px;
-      border-radius: 999px;
-      background: var(--chip);
-      border: 1px solid var(--chip-border);
-      font-size: 12px;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }}
-    .accent {{
-      height: 3px;
-      width: 100%;
-      margin: 14px 0 16px;
-      background: linear-gradient(90deg, var(--accent), transparent);
-      opacity: 0.8;
-      border-radius: 999px;
-    }}
-    .info-grid {{
-      margin-top: 4px;
-      display: grid;
-      grid-template-columns: 96px 1fr;
-      gap: 8px 12px;
-    }}
-    .label {{
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .value {{
-      font-size: 14px;
-      color: var(--text);
-      word-break: break-all;
-    }}
-    .divider {{
-      height: 1px;
-      background: var(--line);
-      margin: 18px 0 14px;
-    }}
-    .section-title {{
-      font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 10px;
-    }}
-    .players-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }}
-    .players-table th {{
-      text-align: left;
-      color: var(--muted);
-      font-weight: 600;
-      padding: 6px 0;
-      border-bottom: 1px solid var(--line);
-    }}
-    .players-table td {{
-      padding: 6px 0;
-      border-bottom: 1px dashed #474747;
-    }}
-    .players-empty {{
-      background: #424242;
-      border-radius: 10px;
-      padding: 10px 12px;
-      color: #d0d0d0;
-      font-size: 13px;
-    }}
-    .footer {{
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 11px;
-      text-align: right;
-    }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    {header_html}
-    <div class="content">
-      <div class="title">
-        <span class="badge">服务器状态更新</span>
-      </div>
-      <div class="accent"></div>
-      <div class="info-grid">
-        <div class="label">服务器名称</div><div class="value">{server_name}</div>
-        <div class="label">官方网站</div><div class="value">example.com</div>
-        <div class="label">服务器IP</div><div class="value">{host_safe}</div>
-        <div class="label">服务器人数</div><div class="value">{player_count}/{max_players}</div>
-        <div class="label">当前地图</div><div class="value">{map_name}</div>
-        <div class="label">当前延迟</div><div class="value">{ping_ms} ms</div>
-        <div class="label">游戏</div><div class="value">{game}</div>
-      </div>
-      <div class="divider"></div>
-      <div class="section-title">玩家列表</div>
-      {players_html}
-      <div class="footer">查询时间：{now_text}</div>
-    </div>
-  </div>
-</body>
-</html>"""
-
-    async def _render_html_to_image_ref(self, html_content: str) -> str | None:
-        render_strategies = [
-            {
-                "full_page": True,
-                "type": "png",
-                "scale": "device",
-                "device_scale_factor_level": "normal",
-            },
-            {
-                "full_page": True,
-                "type": "jpeg",
-                "quality": 80,
-                "scale": "device",
-                "device_scale_factor_level": "low",
-            },
-        ]
-
-        render_func = getattr(self, "html_render", None)
-        if not callable(render_func):
-            self._debug("html_render not available")
-            return None
-
-        for options in render_strategies:
-            try:
-                try:
-                    result = await render_func(html_content, {}, True, options)
-                except TypeError:
-                    try:
-                        result = await render_func(
-                            html_content, {}, return_url=True, options=options
-                        )
-                    except TypeError:
-                        result = await render_func(html_content, {}, options=options)
-
-                image_ref = self._extract_image_ref(result)
-                if image_ref:
-                    return image_ref
-            except Exception as exc:
-                logger.warning("html render url failed (%s): %s", options, exc)
-
-        return None
-
-    async def _render_html_to_bytes(self, html_content: str) -> bytes | None:
-        render_func = getattr(self, "html_render", None)
-        if not callable(render_func):
-            self._debug("html_render not available")
-            return None
-
-        options = {
-            "full_page": True,
-            "type": "jpeg",
-            "quality": 85,
-            "scale": "device",
-        }
-
-        try_orders = (
-            ("legacy", lambda: render_func(html_content, {}, False, options)),
-            ("keyword", lambda: render_func(html_content, {}, return_url=False, options=options)),
-            ("simple", lambda: render_func(html_content, {}, options=options)),
-        )
-
-        last_error = ""
-        for label, call in try_orders:
-            try:
-                result = await call()
-                if isinstance(result, (bytes, bytearray)) and result:
-                    return bytes(result)
-                last_error = f"{label} returned no bytes"
-            except TypeError:
-                last_error = f"{label} signature not supported"
-                continue
-            except Exception as exc:
-                last_error = f"{label} error: {exc}"
-                break
-
-        self._debug("html_render bytes failed: %s", last_error)
-        return None
-
     @filter.command("prefetch_header", alias={"预载头图"})
     async def prefetch_header(self, event: AstrMessageEvent):
         """预载头图到缓存"""
@@ -1844,33 +1571,6 @@ class HlymcnSignIn(Star):
             else:
                 humans.append(p)
         return humans, bots
-
-    def _format_players_html(self, players: list[Any], max_count: int) -> str:
-        if not players:
-            return '<div class="players-empty">暂无玩家</div>'
-
-        players = sorted(players, key=lambda p: getattr(p, "score", 0), reverse=True)
-        rows = []
-        for idx, p in enumerate(players[:max_count], 1):
-            name = (p.name or "玩家").strip() if hasattr(p, "name") else "玩家"
-            score = getattr(p, "score", 0)
-            duration = getattr(p, "duration", 0)
-            minutes = int(duration) // 60
-            rows.append(
-                "<tr>"
-                f"<td>{idx}</td>"
-                f"<td>{html.escape(name)}</td>"
-                f"<td>{score}</td>"
-                f"<td>{minutes}m</td>"
-                "</tr>"
-            )
-        rows_html = "".join(rows)
-        return (
-            "<table class=\"players-table\">"
-            "<thead><tr><th>#</th><th>玩家</th><th>分数</th><th>时长</th></tr></thead>"
-            f"<tbody>{rows_html}</tbody>"
-            "</table>"
-        )
 
     def _format_servers_list(self) -> str:
         servers = self._server_map()
@@ -2462,7 +2162,8 @@ class HlymcnSignIn(Star):
             self._debug("card render failed: no image bytes")
 
         if render_mode == "image_text":
-            header_url = str(self._cfg("header_image_url", "")).strip()
+            header_urls = self._get_header_urls()
+            header_url = random.choice(header_urls) if header_urls else ""
             if header_url and self._is_http_url(header_url):
                 chain = [
                     Comp.Image.fromURL(header_url),
