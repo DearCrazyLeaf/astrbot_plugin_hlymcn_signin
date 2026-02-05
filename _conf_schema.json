@@ -108,6 +108,12 @@
     "options": ["image_text", "card", "text"],
     "hint": "image_text 头图+文字，card 卡片渲染，text 纯文本"
   },
+  "server_official_site": {
+    "description": "官方网站显示内容",
+    "type": "string",
+    "default": "example.com",
+    "hint": "用于卡片和文本中“官方网站”字段"
+  },
 
   "header_image_url": {
     "description": "头图链接",

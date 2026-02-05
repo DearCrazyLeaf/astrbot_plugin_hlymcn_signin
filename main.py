@@ -1040,12 +1040,13 @@ class HlymcnSignIn(Star):
         value_font = self._load_font(int(18 * scale), bold=False)
         small_font = self._load_font(int(14 * scale), bold=False)
 
+        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
         ping_ms = float(getattr(info, "ping", 0) * 1000)
         _, bot_players = self._split_players(players)
         bot_count = len(bot_players)
         bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
         info_items = [
-            ("", "官方网站", "example.com"),
+            ("", "官方网站", official_site),
             ("", "服务器IP", f"{host}:{port}"),
             ("", "服务器人数", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
             ("", "当前地图", getattr(info, "map_name", "")),
@@ -1252,12 +1253,13 @@ class HlymcnSignIn(Star):
         value_font = self._load_font(int(18 * scale), bold=False)
         small_font = self._load_font(int(14 * scale), bold=False)
 
+        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
         ping_ms = float(getattr(info, "ping", 0) * 1000)
         _, bot_players = self._split_players(players)
         bot_count = len(bot_players)
         bot_suffix = f" ({bot_count} BOT)" if bot_count else ""
         info_items = [
-            ("", "官方网站", "example.com"),
+            ("", "官方网站", official_site),
             ("", "服务器IP", f"{host}:{port}"),
             ("", "服务器人数", f"{getattr(info, 'player_count', 0)}/{getattr(info, 'max_players', 0)}{bot_suffix}"),
             ("", "当前地图", getattr(info, "map_name", "")),
@@ -2109,13 +2111,14 @@ class HlymcnSignIn(Star):
         human_players, bot_players = self._split_players(players)
         bot_count = len(bot_players)
         players_md = self._format_players(human_players, max_players_show)
+        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
 
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         response = (
             "服务器状态更新！\n"
             "--------------------\n"
             f"服务器名称：{info.server_name}\n"
-            "官方网站：example.com\n"
+            f"官方网站：{official_site}\n"
             f"服务器IP：{host}:{port}\n"
             f"服务器人数：{info.player_count}/{info.max_players}"
             f"{f' ({bot_count} BOT)' if bot_count else ''}\n"
