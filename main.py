@@ -26,7 +26,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.7.1",
+    "0.7.2",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
