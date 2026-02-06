@@ -109,10 +109,17 @@
     "hint": "image_text 头图+文字，card 卡片渲染，text 纯文本"
   },
   "server_official_site": {
-    "description": "官方网站显示内容",
+    "description": "官方网站默认显示内容",
     "type": "string",
     "default": "example.com",
-    "hint": "用于卡片和文本中“官方网站”字段"
+    "hint": "用于卡片和文本中“官方网站”字段，如果服务器专属官方网站未配置则显示此内容"
+  },
+  "server_official_sites": {
+    "description": "服务器专属官方网站",
+    "type": "list",
+    "default": [],
+    "hint": "每项格式：别名=网站，例如 cs=example.com；未配置则使用上面的默认官方网站",
+    "items": { "type": "string" }
   },
 
   "header_image_url": {

@@ -26,7 +26,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.7.2",
+    "0.7.3",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -409,6 +409,58 @@ class HlymcnSignIn(Star):
                     servers[name] = addr
 
         return servers
+
+    def _server_official_site_map(self) -> dict[str, str]:
+        raw = self._cfg("server_official_sites", {})
+        sites: dict[str, str] = {}
+
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                k = str(key).strip()
+                v = str(value).strip()
+                if k and v:
+                    sites[k] = v
+        elif isinstance(raw, list):
+            for item in raw:
+                text = str(item).strip()
+                if not text or "=" not in text:
+                    continue
+                name, addr = text.split("=", 1)
+                name = name.strip()
+                addr = addr.strip()
+                if name and addr:
+                    sites[name] = addr
+
+        return sites
+
+    def _get_server_official_site(self, server_alias: str, host: str | None = None, port: int | None = None) -> str:
+        sites = self._server_official_site_map()
+        site = ""
+
+        key = server_alias.strip() if server_alias else ""
+        if key:
+            site = sites.get(key, "")
+            if not site:
+                lowered = key.lower()
+                for name, value in sites.items():
+                    if name.lower() == lowered:
+                        site = value
+                        break
+
+        if not site and host and port is not None:
+            addr = f"{host}:{port}"
+            site = sites.get(addr, "")
+            if not site:
+                lowered = addr.lower()
+                for name, value in sites.items():
+                    if name.lower() == lowered:
+                        site = value
+                        break
+
+        if not site:
+            site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
+
+        return site
 
     def _match_server_alias(self, text: str) -> tuple[str, str] | None:
         servers = self._server_map()
@@ -1027,6 +1079,7 @@ class HlymcnSignIn(Star):
         players: list[Any],
         max_players_show: int,
         scale: float = 1.2,
+        official_site: str | None = None,
     ) -> tuple[int, int]:
         card_width = int(820 * scale)
         padding = int(28 * scale)
@@ -1040,7 +1093,7 @@ class HlymcnSignIn(Star):
         value_font = self._load_font(int(18 * scale), bold=False)
         small_font = self._load_font(int(14 * scale), bold=False)
 
-        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
+        official_site = (official_site or "").strip() or str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
         ping_ms = float(getattr(info, "ping", 0) * 1000)
         _, bot_players = self._split_players(players)
         bot_count = len(bot_players)
@@ -1205,7 +1258,15 @@ class HlymcnSignIn(Star):
         now_text: str,
         max_players_show: int,
     ) -> bytes | None:
-        card_width, card_height = self._estimate_card_size(host, port, info, players, max_players_show)
+        official_site = self._get_server_official_site(server_alias, host, port)
+        card_width, card_height = self._estimate_card_size(
+            host,
+            port,
+            info,
+            players,
+            max_players_show,
+            official_site=official_site,
+        )
         header_image = await self._get_header_image(card_width, card_height)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -1220,6 +1281,7 @@ class HlymcnSignIn(Star):
                 now_text,
                 max_players_show,
                 header_image,
+                official_site,
             ),
         )
 
@@ -1233,8 +1295,16 @@ class HlymcnSignIn(Star):
         now_text: str,
         max_players_show: int,
         header_image: Image.Image | None,
+        official_site: str | None,
     ) -> bytes | None:
-        card_width, card_height = self._estimate_card_size(host, port, info, players, max_players_show)
+        card_width, card_height = self._estimate_card_size(
+            host,
+            port,
+            info,
+            players,
+            max_players_show,
+            official_site=official_site,
+        )
         scale = 1.2
         header_h = 0
         padding = int(28 * scale)
@@ -1253,7 +1323,7 @@ class HlymcnSignIn(Star):
         value_font = self._load_font(int(18 * scale), bold=False)
         small_font = self._load_font(int(14 * scale), bold=False)
 
-        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
+        official_site = (official_site or "").strip() or "example.com"
         ping_ms = float(getattr(info, "ping", 0) * 1000)
         _, bot_players = self._split_players(players)
         bot_count = len(bot_players)
@@ -2111,7 +2181,7 @@ class HlymcnSignIn(Star):
         human_players, bot_players = self._split_players(players)
         bot_count = len(bot_players)
         players_md = self._format_players(human_players, max_players_show)
-        official_site = str(self._cfg("server_official_site", "example.com")).strip() or "example.com"
+        official_site = self._get_server_official_site(name, host, port)
 
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         response = (

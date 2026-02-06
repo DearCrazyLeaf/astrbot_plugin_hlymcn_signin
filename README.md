@@ -66,6 +66,8 @@ AstrBot WebUI -> 插件 -> 插件配置
 | server_status_api_path | 查服 API 路径（可自定义，默认 <YOUR_SERVER_STATUS_API_PATH>） |
 | server_status_api_fallback | 查服 API 失败是否回退 A2S 直连 |
 | servers | 服务器别名列表（别名=ip:port） |
+| server_official_site | 默认官网显示内容（未配置专属官网时使用） |
+| server_official_sites | 服务器专属官网（别名=官网），优先级高于默认官网 |
 | a2s_render_mode | 查服输出模式（card / image_text / text） |
 | stats_render_mode | 数据输出模式（card / text） |
 
