@@ -122,6 +122,7 @@
 模式行为：
 - `header`：始终使用插件自定义头图缓存
 - `map_cover`：优先使用后端返回地图封面；不可用时自动回退 `header`
+- `map_cover`：插件会将已获取的地图封面缓存到 `data/plugin_data/<插件名>/map_cover_cache/`，文件名按地图名生成（例如 `de_dust2.jpg`）
 
 > [!IMPORTANT]
 > `map_cover` 需要后端查服 API 返回地图图字段之一：  

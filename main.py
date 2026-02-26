@@ -8,6 +8,7 @@ from pathlib import Path
 from functools import partial
 import random
 import asyncio
+import hashlib
 import a2s
 import httpx
 from types import SimpleNamespace
@@ -26,7 +27,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.8.0",
+    "0.8.1",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -546,6 +547,41 @@ class HlymcnSignIn(Star):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _map_cover_cache_dir(self) -> Path:
+        path = StarTools.get_data_dir() / "map_cover_cache"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _map_cover_cache_name(self, map_name: str, image_url: str) -> str:
+        name = str(map_name or "").strip().lower()
+        name = name.replace("\\", "/")
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        if name.endswith(".bsp"):
+            name = name[:-4]
+        safe = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in name).strip("_")
+        if not safe:
+            digest = hashlib.md5(image_url.encode("utf-8")).hexdigest()[:12]
+            safe = f"map_{digest}"
+        return safe[:80]
+
+    def _map_cover_cache_path(self, map_name: str, image_url: str) -> Path:
+        filename = self._map_cover_cache_name(map_name, image_url) + ".jpg"
+        return self._map_cover_cache_dir() / filename
+
+    def _trim_map_cover_cache(self, max_keep: int = 200) -> None:
+        if max_keep <= 0:
+            return
+        items = [p for p in self._map_cover_cache_dir().glob("*.jpg") if p.is_file()]
+        if len(items) <= max_keep:
+            return
+        items.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in items[max_keep:]:
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
     def _get_header_urls(self) -> list[str]:
         raw = self._cfg("header_image_url", "")
         if isinstance(raw, list):
@@ -708,15 +744,30 @@ class HlymcnSignIn(Star):
         except Exception:
             return None
 
-    async def _get_map_cover_image(self, url: str, width: int, height: int) -> Image.Image | None:
+    async def _get_map_cover_image(self, map_name: str, url: str, width: int, height: int) -> Image.Image | None:
         image_url = self._normalize_http_image_url(url)
         if not image_url:
             return None
+        cache_path = self._map_cover_cache_path(map_name, image_url)
+        if cache_path.exists():
+            try:
+                cached = Image.open(cache_path).convert("RGB")
+                return self._crop_cover(cached, width, height)
+            except Exception:
+                try:
+                    cache_path.unlink()
+                except Exception:
+                    pass
         content = await self._download_header_bytes(image_url)
         if not content:
             return None
         try:
             img = Image.open(BytesIO(content)).convert("RGB")
+            try:
+                img.save(cache_path, format="JPEG", quality=90, optimize=True)
+                self._trim_map_cover_cache()
+            except Exception as exc:
+                self._debug("map cover cache save failed: %s", exc)
             return self._crop_cover(img, width, height)
         except Exception as exc:
             self._debug("map cover decode failed: %s", exc)
@@ -725,11 +776,14 @@ class HlymcnSignIn(Star):
     async def _get_query_background_image(self, info: Any, width: int, height: int) -> Image.Image | None:
         if self._server_query_bg_mode() == "map_cover":
             map_cover_url = self._normalize_http_image_url(getattr(info, "map_image_url", ""))
+            map_name = str(getattr(info, "map_name", "")).strip()
             if map_cover_url:
-                map_cover = await self._get_map_cover_image(map_cover_url, width, height)
+                map_cover = await self._get_map_cover_image(map_name, map_cover_url, width, height)
                 if map_cover is not None:
                     return map_cover
                 self._debug("map cover unavailable, fallback to custom header")
+            else:
+                self._debug("map cover url missing, fallback to custom header")
         return await self._get_header_image(width, height)
 
     # --- render helpers ---
@@ -2197,7 +2251,11 @@ class HlymcnSignIn(Star):
 
         timeout_ms = int(self._cfg("a2s_timeout_ms", 3000))
         timeout = max(timeout_ms, 1000) / 1000.0
+        bg_mode = self._server_query_bg_mode()
         api_timeout = self._server_status_api_timeout(timeout_ms)
+        # map_cover 首次命中时后端可能需要实时抓取并上传 OSS，给更宽的 API 超时窗口
+        if bg_mode == "map_cover":
+            api_timeout = max(api_timeout, 12.0)
         api_base = self._server_status_api_base_url()
         api_fallback = self._server_status_api_fallback()
 
@@ -2207,8 +2265,19 @@ class HlymcnSignIn(Star):
         players: list[Any] = []
         if api_base:
             result = await self._fetch_server_status_api(host, port, api_timeout)
+            if not result and bg_mode == "map_cover":
+                self._debug("server status api first attempt failed in map_cover mode, retrying once")
+                result = await self._fetch_server_status_api(host, port, max(api_timeout, 15.0))
             if result:
                 info, players = result
+                if bg_mode == "map_cover" and not self._normalize_http_image_url(getattr(info, "map_image_url", "")):
+                    self._debug("server status api missing map cover url, retrying once")
+                    retry = await self._fetch_server_status_api(host, port, max(api_timeout, 15.0))
+                    if retry:
+                        retry_info, retry_players = retry
+                        retry_cover = self._normalize_http_image_url(getattr(retry_info, "map_image_url", ""))
+                        if retry_cover:
+                            info, players = retry_info, retry_players
             elif not api_fallback:
                 yield event.plain_result("服务器查询失败，请稍后再试")
                 return
@@ -2228,7 +2297,6 @@ class HlymcnSignIn(Star):
         bot_count = len(bot_players)
         players_md = self._format_players(human_players, max_players_show)
         official_site = self._get_server_official_site(name, host, port)
-        bg_mode = self._server_query_bg_mode()
 
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         response = (
