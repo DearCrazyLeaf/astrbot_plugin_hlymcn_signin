@@ -108,6 +108,13 @@
     "options": ["image_text", "card", "text"],
     "hint": "image_text 头图+文字，card 卡片渲染，text 纯文本"
   },
+  "server_query_bg_mode": {
+    "description": "查服背景图模式",
+    "type": "string",
+    "default": "header",
+    "options": ["header", "map_cover"],
+    "hint": "header 使用自定义头图；map_cover 优先使用后端地图封面，失败自动回退头图"
+  },
   "server_official_site": {
     "description": "官方网站默认显示内容",
     "type": "string",

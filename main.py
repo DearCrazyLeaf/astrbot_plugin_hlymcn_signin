@@ -26,7 +26,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.7.3",
+    "0.8.0",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -178,6 +178,12 @@ class HlymcnSignIn(Star):
     def _server_status_api_fallback(self) -> bool:
         return bool(self._cfg("server_status_api_fallback", True))
 
+    def _server_query_bg_mode(self) -> str:
+        mode = str(self._cfg("server_query_bg_mode", "header")).strip().lower()
+        if mode not in {"header", "map_cover"}:
+            return "header"
+        return mode
+
     def _rcon_api_base_url(self) -> str:
         return str(self._cfg("rcon_api_base_url", "")).strip().rstrip("/")
 
@@ -284,6 +290,7 @@ class HlymcnSignIn(Star):
         if not server:
             return None
 
+        basic_info = server.get("basic_info") or {}
         raw = server.get("raw") or server.get("raw_data") or {}
         query = server.get("query") or {}
 
@@ -323,6 +330,12 @@ class HlymcnSignIn(Star):
         if max_players == 0 and player_count > 0:
             max_players = player_count
 
+        map_image_url = self._normalize_http_image_url(
+            server.get("mapImage")
+            or server.get("map_image")
+            or (basic_info.get("map_image") if isinstance(basic_info, dict) else "")
+        )
+
         info = SimpleNamespace(
             server_name=str(server.get("name") or ""),
             map_name=str(server.get("map") or ""),
@@ -330,6 +343,7 @@ class HlymcnSignIn(Star):
             max_players=max_players,
             ping=ping_ms / 1000.0,
             game=str(raw.get("game") or "Counter-Strike 2"),
+            map_image_url=map_image_url,
         )
 
         return info, players
@@ -494,6 +508,14 @@ class HlymcnSignIn(Star):
 
     def _is_http_url(self, text: str) -> bool:
         return text.startswith("http://") or text.startswith("https://")
+
+    def _normalize_http_image_url(self, text: Any) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return ""
+        if value.startswith("//"):
+            value = f"https:{value}"
+        return value if self._is_http_url(value) else ""
 
     def _extract_image_ref(self, result: Any) -> str | None:
         if isinstance(result, str):
@@ -685,6 +707,30 @@ class HlymcnSignIn(Star):
             return self._crop_cover(img, width, height)
         except Exception:
             return None
+
+    async def _get_map_cover_image(self, url: str, width: int, height: int) -> Image.Image | None:
+        image_url = self._normalize_http_image_url(url)
+        if not image_url:
+            return None
+        content = await self._download_header_bytes(image_url)
+        if not content:
+            return None
+        try:
+            img = Image.open(BytesIO(content)).convert("RGB")
+            return self._crop_cover(img, width, height)
+        except Exception as exc:
+            self._debug("map cover decode failed: %s", exc)
+            return None
+
+    async def _get_query_background_image(self, info: Any, width: int, height: int) -> Image.Image | None:
+        if self._server_query_bg_mode() == "map_cover":
+            map_cover_url = self._normalize_http_image_url(getattr(info, "map_image_url", ""))
+            if map_cover_url:
+                map_cover = await self._get_map_cover_image(map_cover_url, width, height)
+                if map_cover is not None:
+                    return map_cover
+                self._debug("map cover unavailable, fallback to custom header")
+        return await self._get_header_image(width, height)
 
     # --- render helpers ---
     def _load_font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -1267,7 +1313,7 @@ class HlymcnSignIn(Star):
             max_players_show,
             official_site=official_site,
         )
-        header_image = await self._get_header_image(card_width, card_height)
+        header_image = await self._get_query_background_image(info, card_width, card_height)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -2182,6 +2228,7 @@ class HlymcnSignIn(Star):
         bot_count = len(bot_players)
         players_md = self._format_players(human_players, max_players_show)
         official_site = self._get_server_official_site(name, host, port)
+        bg_mode = self._server_query_bg_mode()
 
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         response = (
@@ -2202,7 +2249,7 @@ class HlymcnSignIn(Star):
         )
 
         if render_mode == "card":
-            if not self._list_header_cache() and self._get_header_urls():
+            if bg_mode == "header" and not self._list_header_cache() and self._get_header_urls():
                 yield event.plain_result("头图缓存为空，正在准备数据，请稍候...")
                 await self._prefetch_headers(1, int(self._cfg("header_cache_limit", 30)))
             image_bytes = await self._render_card_pil(
@@ -2227,7 +2274,8 @@ class HlymcnSignIn(Star):
                         action = "send_group_msg"
                     await event.bot.api.call_action(action, **payload)
                     event.stop_event()
-                    asyncio.create_task(self._silent_refresh_header_cache())
+                    if bg_mode == "header":
+                        asyncio.create_task(self._silent_refresh_header_cache())
                     return
                 except Exception as exc:
                     logger.error("card base64 send failed: %s", exc)
@@ -2235,11 +2283,16 @@ class HlymcnSignIn(Star):
             self._debug("card render failed: no image bytes")
 
         if render_mode == "image_text":
-            header_urls = self._get_header_urls()
-            header_url = random.choice(header_urls) if header_urls else ""
-            if header_url and self._is_http_url(header_url):
+            image_url = ""
+            if bg_mode == "map_cover":
+                image_url = self._normalize_http_image_url(getattr(info, "map_image_url", ""))
+            if not image_url:
+                header_urls = self._get_header_urls()
+                image_url = random.choice(header_urls) if header_urls else ""
+
+            if image_url and self._is_http_url(image_url):
                 chain = [
-                    Comp.Image.fromURL(header_url),
+                    Comp.Image.fromURL(image_url),
                     Comp.Plain(response),
                 ]
                 yield event.chain_result(chain)
