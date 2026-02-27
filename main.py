@@ -4,6 +4,7 @@ from typing import Any, Iterable
 from datetime import datetime
 from io import BytesIO
 import base64
+import struct
 from pathlib import Path
 from functools import partial
 import random
@@ -22,12 +23,87 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
+RCON_TIMEOUT_DEFAULT = 5.0
+
+
+class AsyncRCON:
+    """Pure asyncio Source RCON client."""
+
+    def __init__(self, host: str, port: int, password: str, timeout: float = RCON_TIMEOUT_DEFAULT):
+        self.host = host
+        self.port = port
+        self.password = password
+        self.timeout = max(float(timeout), 1.0)
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
+        self._packet_id = 0
+
+    def _next_id(self) -> int:
+        self._packet_id += 1
+        return self._packet_id
+
+    async def connect(self) -> None:
+        self.reader, self.writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port), timeout=self.timeout
+        )
+        auth_id = self._next_id()
+        await self._send(packet_type=3, body=self.password, packet_id=auth_id)  # SERVERDATA_AUTH
+        while True:
+            resp = await self._read()
+            if resp["id"] == -1:
+                raise ValueError("RCON 认证失败：密码错误或被拒绝")
+            if resp["type"] == 2 and resp["id"] == auth_id:
+                break
+
+    async def execute(self, command: str) -> str:
+        req_id = self._next_id()
+        await self._send(packet_type=2, body=command, packet_id=req_id)  # SERVERDATA_EXECCOMMAND
+        chunks: list[str] = []
+        try:
+            while True:
+                resp = await asyncio.wait_for(self._read(), timeout=self.timeout)
+                if resp["id"] == req_id:
+                    chunks.append(resp.get("body", ""))
+                    break
+        except asyncio.TimeoutError:
+            pass
+        return "".join(chunks).strip()
+
+    async def _send(self, packet_type: int, body: str, packet_id: int) -> None:
+        if self.writer is None:
+            raise RuntimeError("RCON 未连接")
+        body_bytes = body.encode("utf-8")
+        size = 10 + len(body_bytes)
+        packet = struct.pack("<iii", size, packet_id, packet_type) + body_bytes + b"\x00\x00"
+        self.writer.write(packet)
+        await self.writer.drain()
+
+    async def _read(self) -> dict[str, Any]:
+        if self.reader is None:
+            raise RuntimeError("RCON 未连接")
+        size_data = await asyncio.wait_for(self.reader.readexactly(4), timeout=self.timeout)
+        size = struct.unpack("<i", size_data)[0]
+        payload = await asyncio.wait_for(self.reader.readexactly(size), timeout=self.timeout)
+        packet_id, packet_type = struct.unpack("<ii", payload[:8])
+        body = payload[8:-2].decode("utf-8", errors="ignore")
+        return {"id": packet_id, "type": packet_type, "body": body}
+
+    async def close(self) -> None:
+        if self.writer is not None:
+            self.writer.close()
+            try:
+                await self.writer.wait_closed()
+            except Exception:
+                pass
+        self.writer = None
+        self.reader = None
+
 
 @register(
     "HLYM服务器工具",
     "hlymcn",
     "定制：群聊签到 + 服务器查询（A2S）+ 信息查询 + 服务器远程工具",
-    "0.8.1",
+    "0.8.2",
 )
 class HlymcnSignIn(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -185,11 +261,47 @@ class HlymcnSignIn(Star):
             return "header"
         return mode
 
-    def _rcon_api_base_url(self) -> str:
-        return str(self._cfg("rcon_api_base_url", "")).strip().rstrip("/")
-
     def _rcon_password(self) -> str:
         return str(self._cfg("rcon_password", "")).strip()
+
+    def _rcon_password_map(self) -> dict[str, str]:
+        raw = self._cfg("rcon_passwords", {})
+        mapping: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                k = str(key).strip()
+                v = str(value).strip()
+                if k and v:
+                    mapping[k] = v
+        elif isinstance(raw, list):
+            for item in raw:
+                text = str(item).strip()
+                if not text or "=" not in text:
+                    continue
+                key, value = text.split("=", 1)
+                k = key.strip()
+                v = value.strip()
+                if k and v:
+                    mapping[k] = v
+        return mapping
+
+    def _rcon_password_for_server(self, alias: str, host: str, port: int) -> str:
+        mapping = self._rcon_password_map()
+        if alias and alias in mapping:
+            return mapping[alias]
+        addr = f"{host}:{port}"
+        if addr in mapping:
+            return mapping[addr]
+        if alias:
+            lowered = alias.lower()
+            for key, value in mapping.items():
+                if key.lower() == lowered:
+                    return value
+        lowered_addr = addr.lower()
+        for key, value in mapping.items():
+            if key.lower() == lowered_addr:
+                return value
+        return self._rcon_password()
 
     def _rcon_prefix(self) -> str:
         return str(self._cfg("rcon_command_prefix", "rcon")).strip()
@@ -354,53 +466,32 @@ class HlymcnSignIn(Star):
             yield event.plain_result("RCON 仅管理员可用")
             return
 
-        base = self._rcon_api_base_url()
-        password = self._rcon_password()
-        if not base or not password:
-            yield event.plain_result("RCON 未配置，请设置 rcon_api_base_url 与 rcon_password")
-            return
-        if base.startswith("http://"):
-            logger.warning("rcon_api_base_url 使用 http 明文传输，存在泄露风险")
-
         try:
             host, port = self._parse_address(addr)
         except ValueError as exc:
             yield event.plain_result(f"服务器地址错误：{exc}")
             return
 
-        payload = {
-            "ip": f"{host}:{port}",
-            "cmd": command,
-            "passwd": password,
-        }
-        headers = {"Content-Type": "application/json;charset=UTF-8"}
-        client = self._get_http_client()
+        password = self._rcon_password_for_server(name, host, port)
+        if not password:
+            yield event.plain_result("RCON 未配置，请设置 rcon_password（或 rcon_passwords）")
+            return
+
+        rcon = AsyncRCON(host=host, port=port, password=password, timeout=self._rcon_timeout())
         try:
-            resp = await client.post(f"{base}/rcon", json=payload, headers=headers, timeout=self._rcon_timeout())
+            await rcon.connect()
+            output = await rcon.execute(command)
         except Exception as exc:
-            logger.error("rcon request failed: %s", exc)
-            yield event.plain_result("RCON 请求失败，请稍后重试")
+            logger.error("rcon direct request failed: %s", exc)
+            yield event.plain_result(f"RCON 执行失败：{type(exc).__name__}")
             return
+        finally:
+            await rcon.close()
 
-        if resp.status_code != 200:
-            yield event.plain_result(f"RCON 请求失败：HTTP {resp.status_code}")
-            return
-
-        try:
-            data = resp.json()
-        except Exception:
-            yield event.plain_result("RCON 返回解析失败")
-            return
-
-        if isinstance(data, dict) and data.get("success", False):
-            message = data.get("data") or data.get("msg") or "RCON 执行完成"
-            yield event.plain_result(str(message))
-            return
-
-        message = None
-        if isinstance(data, dict):
-            message = data.get("msg") or data.get("message") or data.get("data")
-        yield event.plain_result(str(message or "RCON 执行完成（无返回）"))
+        message = output.strip() if isinstance(output, str) else ""
+        if not message:
+            message = "RCON 执行完成（无返回）"
+        yield event.plain_result(message)
 
     def _server_map(self) -> dict[str, str]:
         raw = self._cfg("servers", {})
@@ -2441,5 +2532,6 @@ class HlymcnSignIn(Star):
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
 
 

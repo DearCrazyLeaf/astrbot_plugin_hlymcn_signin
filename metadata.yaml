@@ -1,6 +1,6 @@
 ﻿name: astrbot_plugin_hlymcn_signin
 display_name: HLYM服务器工具
 desc: 一个为HLYM社区定向开发的服务器工具插件，提供基础的查询功能，如果需要使用捆绑的更多功能需要自行适配后端系统
-version: v0.8.1
+version: v0.8.2
 author: HLYMCN
 repo: https://github.com/DearCrazyLeaf/astrbot_plugin_hlymcn_signin

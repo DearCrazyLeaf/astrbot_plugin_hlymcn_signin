@@ -27,8 +27,8 @@
 > 本插件高度依赖后端。  
 > 本仓库只提供 AstrBot 插件，不提供后端服务实现。
 
-如果你没有自建后端，通常只能使用“基础查服（A2S 直连）”这类浅层功能。  
-签到、数据查询、RCON、地图封面背景等核心能力都需要你自己的后端接口支持。
+如果你没有自建后端，通常只能使用“基础查服（A2S 直连）”和“本地直连 RCON”这类功能
+签到、数据查询、地图封面背景等能力仍需要你自己的后端接口支持
 
 ---
 
@@ -42,7 +42,7 @@
 | 查服背景 `map_cover` | 否 | 是 | 需要后端返回 `mapImage/map_image/basic_info.map_image` |
 | 签到 | 否 | 是 | 需要签到接口 |
 | 数据查询 | 否 | 是 | 需要 QQ 数据查询接口 |
-| RCON | 否 | 是 | 需要 RCON 后端 API |
+| RCON | 是 | 否 | 插件直连服务器 RCON（需配置密码与管理员） |
 
 ---
 
@@ -70,8 +70,8 @@
 - `stats_path`
 - `server_status_api_base_url`
 - `server_status_api_path`
-- `rcon_api_base_url`
 - `rcon_password`
+- `rcon_passwords`（可选）
 - `rcon_admin_ids`
 
 ---
@@ -127,7 +127,7 @@
 > [!IMPORTANT]
 > `map_cover` 需要后端查服 API 返回地图图字段之一：  
 > `mapImage` / `map_image` / `basic_info.map_image`  
-> 若后端不返回，插件会自动回退头图模式。
+> 若后端不返回，插件会自动回退头图模式
 
 ### 🗂️ 5. 头图缓存配置
 
@@ -142,8 +142,8 @@
 
 | 配置项 | 说明 |
 |--------|------|
-| `rcon_api_base_url` | RCON API 基础地址 |
-| `rcon_password` | RCON 密码 |
+| `rcon_password` | RCON 全局密码（直连） |
+| `rcon_passwords` | 服务器专属密码（`别名=密码` 或 `ip:port=密码`） |
 | `rcon_command_prefix` | RCON 指令前缀（默认 `rcon`） |
 | `rcon_timeout_ms` | RCON 超时 |
 | `rcon_admin_ids` | 允许执行 RCON 的管理员 QQ 列表（为空则禁用） |
@@ -258,33 +258,21 @@ prefetch_header
 }
 ```
 
-### 4. RCON 接口（固定 `${rcon_api_base_url}/rcon`）
-
-- 请求：`POST`
-- 请求体：
-```json
-{
-  "ip": "1.2.3.4:27015",
-  "cmd": "status",
-  "passwd": "your-password"
-}
-```
-
 ---
 
 ## 🧭 常见配置盲区
 
 1. 配了 `map_cover` 但背景不生效  
-后端没返回地图封面字段，插件会自动回退头图。
+后端没返回地图封面字段，插件会自动回退头图
 
 2. 配了 `servers` 但查服失败  
-请检查服务器地址格式是否为 `ip:port`，并确认 `allowed_group_ids` 包含当前群。
+请检查服务器地址格式是否为 `ip:port`，并确认 `allowed_group_ids` 包含当前群
 
 3. 能查服但签到/查数据失败  
-说明后端对应接口未实现或路径不匹配；查服 A2S 可独立工作，不代表其它接口可用。
+说明后端对应接口未实现或路径不匹配；查服 A2S 可独立工作，不代表其它接口可用
 
 4. RCON 没反应  
-检查 `rcon_admin_ids` 是否包含你的 QQ，且 `rcon_api_base_url` 与 `rcon_password` 正确。
+检查 `rcon_admin_ids` 是否包含你的 QQ，并确认 `rcon_password`（或 `rcon_passwords`）配置正确
 
 ---
 

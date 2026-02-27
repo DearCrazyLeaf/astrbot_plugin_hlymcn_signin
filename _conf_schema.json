@@ -1,40 +1,4 @@
 {
-  "base_url": {
-    "description": "后端基础地址",
-    "type": "string",
-    "default": "https://example.com",
-    "hint": "例如 https://example.com"
-  },
-  "timeout_ms": {
-    "description": "HTTP超时(毫秒)",
-    "type": "int",
-    "default": 5000
-  },
-
-  "signin_path": {
-    "description": "签到接口路径",
-    "type": "string",
-    "default": "/api/v1/signinmobile",
-    "hint": "默认 /api/v1/signinmobile"
-  },
-  "stats_path": {
-    "description": "QQ查询接口路径",
-    "type": "string",
-    "default": "/api/v1/qq/stats",
-    "hint": "默认 /api/v1/qq/stats"
-  },
-  "device_type": {
-    "description": "deviceType 参数",
-    "type": "string",
-    "default": "2",
-    "hint": "默认 2"
-  },
-  "signin_type": {
-    "description": "signinType 参数",
-    "type": "string",
-    "default": "1"
-  },
-
   "allowed_group_ids": {
     "description": "允许群号列表",
     "type": "list",
@@ -47,48 +11,6 @@
     "type": "bool",
     "default": true
   },
-  "stats_keywords": {
-    "description": "查询指令关键词",
-    "type": "list",
-    "default": ["data", "stat", "数据", "我的数据", "查询数据"],
-    "items": { "type": "string" }
-  },
-  "stats_render_mode": {
-    "description": "查询输出模式",
-    "type": "string",
-    "default": "card",
-    "options": ["card", "text"],
-    "hint": "card 渲染卡片，text 纯文本"
-  },
-
-  "server_status_api_base_url": {
-    "description": "查服API基础地址",
-    "type": "string",
-    "default": "",
-    "hint": "留空默认使用 base_url"
-  },
-  "server_status_api_path": {
-    "description": "查服API路径",
-    "type": "string",
-    "default": "<YOUR_SERVER_STATUS_API_PATH>",
-    "hint": "查服 API 路径可自定义"
-  },
-  "server_status_api_timeout_ms": {
-    "description": "查服API超时(毫秒)",
-    "type": "int",
-    "default": 5000
-  },
-  "server_status_api_fallback": {
-    "description": "查服API失败时回退直连",
-    "type": "bool",
-    "default": true
-  },
-  "a2s_timeout_ms": {
-    "description": "A2S直连超时(毫秒)",
-    "type": "int",
-    "default": 3000
-  },
-
   "servers": {
     "description": "服务器别名列表",
     "type": "list",
@@ -108,12 +30,10 @@
     "options": ["image_text", "card", "text"],
     "hint": "image_text 头图+文字，card 卡片渲染，text 纯文本"
   },
-  "server_query_bg_mode": {
-    "description": "查服背景图模式",
-    "type": "string",
-    "default": "header",
-    "options": ["header", "map_cover"],
-    "hint": "header 使用自定义头图；map_cover 优先使用后端地图封面，失败自动回退头图"
+  "a2s_timeout_ms": {
+    "description": "A2S直连超时(毫秒)",
+    "type": "int",
+    "default": 3000
   },
   "server_official_site": {
     "description": "官方网站默认显示内容",
@@ -128,7 +48,6 @@
     "hint": "每项格式：别名=网站，例如 cs=example.com；未配置则使用上面的默认官方网站",
     "items": { "type": "string" }
   },
-
   "header_image_url": {
     "description": "头图链接",
     "type": "string",
@@ -153,23 +72,11 @@
     "default": 3000000,
     "hint": "默认 3000000（约3MB）"
   },
-
-  "rcon_api_base_url": {
-    "description": "RCON API基础地址",
-    "type": "string",
-    "default": "",
-    "hint": "例如 http://127.0.0.1:9090"
-  },
-  "rcon_password": {
-    "description": "RCON 密码",
-    "type": "string",
-    "default": ""
-  },
   "rcon_admin_ids": {
     "description": "RCON 管理员QQ列表",
     "type": "list",
     "default": [],
-    "hint": "为空则不限制，建议配置为管理员QQ",
+    "hint": "为空则禁用 RCON，建议配置为管理员QQ",
     "items": { "type": "string" }
   },
   "rcon_command_prefix": {
@@ -178,12 +85,100 @@
     "default": "rcon",
     "hint": "例如 rcon <别名> <命令>"
   },
+  "rcon_password": {
+    "description": "RCON 全局密码",
+    "type": "string",
+    "hint": "用于直连服务器 RCON，所有服务器共用",
+    "default": ""
+  },
+  "rcon_passwords": {
+    "description": "RCON 服务器专属密码",
+    "type": "list",
+    "default": [],
+    "hint": "每项格式：别名=密码 或 ip:port=密码，命中后会覆盖全局 rcon_password",
+    "items": { "type": "string" }
+  },
   "rcon_timeout_ms": {
     "description": "RCON 超时(毫秒)",
     "type": "int",
     "default": 5000
   },
-
+  "base_url": {
+    "description": "后端基础地址",
+    "type": "string",
+    "default": "https://example.com",
+    "hint": "例如 https://example.com"
+  },
+  "timeout_ms": {
+    "description": "HTTP超时(毫秒)",
+    "type": "int",
+    "default": 5000
+  },
+  "signin_path": {
+    "description": "签到接口路径",
+    "type": "string",
+    "default": "/api/v1/signinmobile",
+    "hint": "默认 /api/v1/signinmobile"
+  },
+  "stats_path": {
+    "description": "QQ查询接口路径",
+    "type": "string",
+    "default": "/api/v1/qq/stats",
+    "hint": "默认 /api/v1/qq/stats"
+  },
+  "device_type": {
+    "description": "deviceType 参数",
+    "type": "string",
+    "default": "2",
+    "hint": "默认 2"
+  },
+  "signin_type": {
+    "description": "signinType 参数",
+    "type": "string",
+    "default": "1"
+  },
+  "stats_keywords": {
+    "description": "查询指令关键词",
+    "type": "list",
+    "default": ["data", "stat", "数据", "我的数据", "查询数据"],
+    "items": { "type": "string" }
+  },
+  "stats_render_mode": {
+    "description": "查询输出模式",
+    "type": "string",
+    "default": "card",
+    "options": ["card", "text"],
+    "hint": "card 渲染卡片，text 纯文本"
+  },
+  "server_query_bg_mode": {
+    "description": "查服背景图模式",
+    "type": "string",
+    "default": "header",
+    "options": ["header", "map_cover"],
+    "hint": "header 使用自定义头图；map_cover 优先使用后端地图封面，失败自动回退头图"
+  },
+  "server_status_api_base_url": {
+    "description": "查服API基础地址",
+    "type": "string",
+    "default": "",
+    "hint": "留空默认使用 base_url"
+  },
+  "server_status_api_path": {
+    "description": "查服API路径",
+    "type": "string",
+    "default": "<YOUR_SERVER_STATUS_API_PATH>",
+    "hint": "查服 API 路径可自定义"
+  },
+  "server_status_api_timeout_ms": {
+    "description": "查服API超时(毫秒)",
+    "type": "int",
+    "default": 5000
+  },
+  "server_status_api_fallback": {
+    "description": "查服API失败时回退直连",
+    "type": "bool",
+    "default": true
+  },
   "debug_log": {
     "description": "输出调试日志",
     "type": "bool",
