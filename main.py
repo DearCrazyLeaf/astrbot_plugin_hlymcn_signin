@@ -106,6 +106,16 @@ class AsyncRCON:
     "0.8.2",
 )
 class HlymcnSignIn(Star):
+    _CFG_GROUP_KEYS = (
+        "basic_settings",
+        "local_server_tools",
+        "local_rcon",
+        "header_settings",
+        "backend_signin_stats",
+        "backend_server_query",
+        "debug_settings",
+    )
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -126,8 +136,20 @@ class HlymcnSignIn(Star):
         return self._http
 
     def _cfg(self, key: str, default: Any) -> Any:
-        value = self.config.get(key, default)
-        return default if value is None else value
+        value = self.config.get(key, None)
+        if value is not None:
+            return value
+
+        # Support grouped config schema in WebUI while remaining backward compatible
+        # with legacy flat-key configs.
+        for group_key in self._CFG_GROUP_KEYS:
+            group_value = self.config.get(group_key, None)
+            if isinstance(group_value, dict):
+                nested = group_value.get(key, None)
+                if nested is not None:
+                    return nested
+
+        return default
 
     def _debug_enabled(self) -> bool:
         return bool(self._cfg("debug_log", False))
