@@ -2,6 +2,14 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
+## v0.8.3
+
+### 变更
+- 配置重新优化分组
+
+<details>
+<summary>历史版本（点击展开）</summary>
+
 ## v0.8.2
 
 ### 变更
@@ -11,9 +19,6 @@
 ### 优化
 - 重排 `_conf_schema.json` 配置顺序：先展示无需后端功能，再展示后端相关配置，`debug_log` 置于末尾
 - 优化配置分组可读性，降低首次部署与日常维护时的配置理解成本
-
-<details>
-<summary>历史版本（点击展开）</summary>
 
 ## v0.8.1
 
