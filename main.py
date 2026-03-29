@@ -822,7 +822,13 @@ class HlymcnSignIn(Star):
             cleaned = self._clean_mc_text(motd_data)
             motd_clean = [cleaned] if cleaned else []
 
-        player_list = players.get("list") if isinstance(players.get("list"), list) else []
+        player_list: list[Any] = []
+        if isinstance(players.get("list"), list):
+            player_list.extend(players.get("list"))
+        if isinstance(players.get("sample"), list):
+            player_list.extend(players.get("sample"))
+        if isinstance(payload.get("players_list"), list):
+            player_list.extend(payload.get("players_list"))
         player_names: list[str] = []
         for item in player_list:
             name_raw = item
@@ -1956,15 +1962,46 @@ class HlymcnSignIn(Star):
     def _build_mc_card_players_rows(
         self,
         player_names: list[str],
+        online_count: int,
         max_players_show: int,
     ) -> list[tuple[int, str]]:
-        if not player_names:
+        normalized = self._build_mc_display_player_names(player_names, online_count, max_players_show)
+        if not normalized:
             return [(1, "暂无玩家")]
-        shown = player_names[:max_players_show] if max_players_show > 0 else player_names
-        rows: list[tuple[int, str]] = [(idx + 1, name) for idx, name in enumerate(shown)]
-        if max_players_show > 0 and len(player_names) > max_players_show:
-            rows.append((len(rows) + 1, f"...（共{len(player_names)}人）"))
+        rows: list[tuple[int, str]] = [(idx + 1, name) for idx, name in enumerate(normalized)]
         return rows
+
+    def _build_mc_display_player_names(
+        self,
+        player_names: list[str],
+        online_count: int,
+        max_players_show: int,
+    ) -> list[str]:
+        # Keep order, remove empties/duplicates.
+        merged: list[str] = []
+        seen: set[str] = set()
+        for raw in player_names:
+            name = self._clean_mc_text(raw)
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(name)
+
+        target = max(0, int(online_count or 0))
+        if max_players_show > 0:
+            target = min(target, max_players_show) if target > 0 else max_players_show
+
+        if target <= 0:
+            return merged[:max_players_show] if max_players_show > 0 else merged
+
+        # If upstream only returns partial names, fill placeholders to match online count.
+        while len(merged) < target:
+            merged.append(f"玩家{len(merged) + 1}")
+
+        return merged[:target]
 
     def _estimate_mc_card_size(
         self,
@@ -2425,14 +2462,15 @@ class HlymcnSignIn(Star):
         mc_display_limit = max_players_show if max_players_show > 0 else len(info.players)
         if info.player_count > 0:
             mc_display_limit = max(mc_display_limit, info.player_count)
+        display_players = self._build_mc_display_player_names(
+            info.players,
+            int(getattr(info, "player_count", 0) or 0),
+            mc_display_limit,
+        )
         player_text = "暂无"
-        if info.players:
-            shown = info.players[:mc_display_limit] if mc_display_limit > 0 else info.players
-            if shown:
-                lines = [f"{idx + 1}. {name}" for idx, name in enumerate(shown)]
-                if mc_display_limit > 0 and len(info.players) > mc_display_limit:
-                    lines.append(f"...（共{len(info.players)}人）")
-                player_text = "\n".join(lines)
+        if display_players:
+            lines = [f"{idx + 1}. {name}" for idx, name in enumerate(display_players)]
+            player_text = "\n".join(lines)
 
         motd = " / ".join(self._clean_mc_text(x) for x in info.motd_lines[:2] if self._clean_mc_text(x)).strip()
         if not motd:
@@ -2491,7 +2529,11 @@ class HlymcnSignIn(Star):
                 ("", "游戏类型", "Minecraft"),
                 ("", "延迟", ping_text),
             ]
-            mc_players_rows = self._build_mc_card_players_rows(info.players, mc_display_limit)
+            mc_players_rows = self._build_mc_card_players_rows(
+                info.players,
+                int(getattr(info, "player_count", 0) or 0),
+                mc_display_limit,
+            )
             max_players_cfg = int(getattr(info, "max_players", 0) or 0)
             reserve_rows = max(6, min(18, (max_players_cfg + 1) // 2)) if max_players_cfg > 0 else 6
             image_bytes = await self._render_mc_card_pil(
