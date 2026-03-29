@@ -1990,12 +1990,12 @@ class HlymcnSignIn(Star):
             seen.add(key)
             merged.append(name)
 
+        # Use real online count as the primary target; do not create placeholders when online is 0.
         target = max(0, int(online_count or 0))
-        if max_players_show > 0:
-            target = min(target, max_players_show) if target > 0 else max_players_show
-
         if target <= 0:
             return merged[:max_players_show] if max_players_show > 0 else merged
+        if max_players_show > 0:
+            target = min(target, max_players_show)
 
         # If upstream only returns partial names, fill placeholders to match online count.
         while len(merged) < target:

@@ -2,13 +2,18 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
-## v0.8.8
+## v0.8.9
 
 ### 修复
 - MC卡片模式下显示人数问题
 
 <details>
 <summary>历史版本（点击展开）</summary>
+
+## v0.8.8
+
+### 修复
+- MC卡片模式下显示人数问题
 
 ## v0.8.7
 
