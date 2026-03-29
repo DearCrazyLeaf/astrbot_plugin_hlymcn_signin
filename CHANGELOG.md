@@ -2,13 +2,18 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
-## v0.8.6
+## v0.8.7
 
 ### 优化
 - MC卡片模式优化
 
 <details>
 <summary>历史版本（点击展开）</summary>
+
+## v0.8.6
+
+### 优化
+- MC卡片模式优化
 
 ## v0.8.5
 

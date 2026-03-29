@@ -1971,6 +1971,7 @@ class HlymcnSignIn(Star):
         title_text: str,
         info_items: list[tuple[str, str, str]],
         players_rows: list[tuple[int, str]],
+        reserve_rows: int = 0,
         scale: float = 1.2,
     ) -> tuple[int, int]:
         card_width = int(820 * scale)
@@ -2005,7 +2006,7 @@ class HlymcnSignIn(Star):
         title_line_height = title_font.getbbox("测")[3] + int(8 * scale)
         title_block_height = max(1, len(title_lines)) * title_line_height + divider_gap * 2
         info_height = info_lines_count * line_height
-        rows_count = max(1, len(players_rows))
+        rows_count = max(1, len(players_rows), reserve_rows)
         players_bottom_padding = int(8 * scale)
         players_height = (
             players_title_height
@@ -2036,8 +2037,14 @@ class HlymcnSignIn(Star):
         players_rows: list[tuple[int, str]],
         now_text: str,
         ping_ms: float,
+        reserve_rows: int = 0,
     ) -> bytes | None:
-        card_width, card_height = self._estimate_mc_card_size(title_text, info_items, players_rows)
+        card_width, card_height = self._estimate_mc_card_size(
+            title_text,
+            info_items,
+            players_rows,
+            reserve_rows=reserve_rows,
+        )
         header_image = await self._get_header_image(card_width, card_height)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -2049,6 +2056,7 @@ class HlymcnSignIn(Star):
                 players_rows,
                 now_text,
                 ping_ms,
+                reserve_rows,
                 header_image,
             ),
         )
@@ -2060,10 +2068,17 @@ class HlymcnSignIn(Star):
         players_rows: list[tuple[int, str]],
         now_text: str,
         ping_ms: float,
+        reserve_rows: int,
         header_image: Image.Image | None,
     ) -> bytes | None:
         scale = 1.2
-        card_width, card_height = self._estimate_mc_card_size(title_text, info_items, players_rows, scale=scale)
+        card_width, card_height = self._estimate_mc_card_size(
+            title_text,
+            info_items,
+            players_rows,
+            reserve_rows=reserve_rows,
+            scale=scale,
+        )
         padding = int(28 * scale)
         outer_margin = 0
         corner_radius = 0
@@ -2087,7 +2102,7 @@ class HlymcnSignIn(Star):
         title_height = title_font.getbbox("测")[3]
         title_line_height = title_height + int(8 * scale)
         players_bottom_padding = int(8 * scale)
-        rows_count = max(1, len(players_rows))
+        rows_count = max(1, len(players_rows), reserve_rows)
         title_text = (title_text or "").strip() or "Minecraft 服务器"
         title_lines = self._wrap_text(title_text, title_font, card_width - padding * 2)
         title_block_height = max(1, len(title_lines)) * title_line_height + divider_gap * 2
@@ -2407,12 +2422,15 @@ class HlymcnSignIn(Star):
 
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         max_players_show = max(int(self._cfg("players_limit", 10)), 0)
+        mc_display_limit = max_players_show if max_players_show > 0 else len(info.players)
+        if info.player_count > 0:
+            mc_display_limit = max(mc_display_limit, info.player_count)
         player_text = "暂无"
         if info.players:
-            shown = info.players[:max_players_show] if max_players_show > 0 else info.players
+            shown = info.players[:mc_display_limit] if mc_display_limit > 0 else info.players
             if shown:
                 lines = [f"{idx + 1}. {name}" for idx, name in enumerate(shown)]
-                if max_players_show > 0 and len(info.players) > max_players_show:
+                if mc_display_limit > 0 and len(info.players) > mc_display_limit:
                     lines.append(f"...（共{len(info.players)}人）")
                 player_text = "\n".join(lines)
 
@@ -2473,13 +2491,16 @@ class HlymcnSignIn(Star):
                 ("", "游戏类型", "Minecraft"),
                 ("", "延迟", ping_text),
             ]
-            mc_players_rows = self._build_mc_card_players_rows(info.players, max_players_show)
+            mc_players_rows = self._build_mc_card_players_rows(info.players, mc_display_limit)
+            max_players_cfg = int(getattr(info, "max_players", 0) or 0)
+            reserve_rows = max(6, min(18, (max_players_cfg + 1) // 2)) if max_players_cfg > 0 else 6
             image_bytes = await self._render_mc_card_pil(
                 title_text=motd,
                 info_items=info_items,
                 players_rows=mc_players_rows,
                 now_text=now_text,
                 ping_ms=ping_ms,
+                reserve_rows=reserve_rows,
             )
             if image_bytes and isinstance(event, AiocqhttpMessageEvent):
                 base64_str = base64.b64encode(image_bytes).decode("utf-8")
