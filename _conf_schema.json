@@ -96,6 +96,49 @@
       }
     }
   },
+  "minecraft_query": {
+    "description": "Minecraft 查询（独立后端）",
+    "type": "object",
+    "hint": "MC 查询不走全局后端，使用独立 API 配置",
+    "items": {
+      "mc_servers": {
+        "description": "Minecraft 服务器别名列表",
+        "type": "list",
+        "default": [],
+        "hint": "每项格式：别名=host:port，未写端口默认 25565",
+        "items": {
+          "type": "string"
+        }
+      },
+      "mc_query_api_base": {
+        "description": "Minecraft 查询 API",
+        "type": "string",
+        "default": "https://api.mcsrvstat.us/3",
+        "hint": "示例：https://api.mcsrvstat.us/3"
+      },
+      "mc_timeout_ms": {
+        "description": "Minecraft 查询超时(毫秒)",
+        "type": "int",
+        "default": 5000
+      },
+      "mc_render_mode": {
+        "description": "Minecraft 输出模式",
+        "type": "string",
+        "default": "text",
+        "options": [
+          "text",
+          "image_text"
+        ],
+        "hint": "text 纯文本；image_text 头图+文本"
+      },
+      "mc_show_address": {
+        "description": "显示服务器地址",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后在查询结果中显示 host:port"
+      }
+    }
+  },
   "local_rcon": {
     "description": "本地 RCON 设置",
     "type": "object",

@@ -2,13 +2,18 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
+## v0.8.4
+
+### 变更
+- 新增MC服务器查询逻辑，使用独立分区配置，与A2S分离
+
+<details>
+<summary>历史版本（点击展开）</summary>
+
 ## v0.8.3
 
 ### 变更
 - 配置重新优化分组
-
-<details>
-<summary>历史版本（点击展开）</summary>
 
 ## v0.8.2
 

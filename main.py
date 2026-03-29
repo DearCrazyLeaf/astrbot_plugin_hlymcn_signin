@@ -5,6 +5,7 @@ from datetime import datetime
 from io import BytesIO
 import base64
 import struct
+import re
 from pathlib import Path
 from functools import partial
 import random
@@ -109,6 +110,7 @@ class HlymcnSignIn(Star):
     _CFG_GROUP_KEYS = (
         "basic_settings",
         "local_server_tools",
+        "minecraft_query",
         "local_rcon",
         "header_settings",
         "backend_signin_stats",
@@ -538,6 +540,29 @@ class HlymcnSignIn(Star):
 
         return servers
 
+    def _mc_server_map(self) -> dict[str, str]:
+        raw = self._cfg("mc_servers", {})
+        servers: dict[str, str] = {}
+
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                k = str(key).strip()
+                v = str(value).strip()
+                if k and v:
+                    servers[k] = v
+        elif isinstance(raw, list):
+            for item in raw:
+                text = str(item).strip()
+                if not text or "=" not in text:
+                    continue
+                name, addr = text.split("=", 1)
+                name = name.strip()
+                addr = addr.strip()
+                if name and addr:
+                    servers[name] = addr
+
+        return servers
+
     def _server_official_site_map(self) -> dict[str, str]:
         raw = self._cfg("server_official_sites", {})
         sites: dict[str, str] = {}
@@ -606,6 +631,22 @@ class HlymcnSignIn(Star):
 
         return None
 
+    def _match_mc_server_alias(self, text: str) -> tuple[str, str] | None:
+        servers = self._mc_server_map()
+        if not servers:
+            return None
+
+        key = text.strip()
+        if key in servers:
+            return key, servers[key]
+
+        lowered = key.lower()
+        for name, addr in servers.items():
+            if name.lower() == lowered:
+                return name, addr
+
+        return None
+
     def _parse_address(self, addr: str) -> tuple[str, int]:
         if ":" in addr:
             host, port_str = addr.rsplit(":", 1)
@@ -619,6 +660,115 @@ class HlymcnSignIn(Star):
         if not host:
             raise ValueError("主机不能为空")
         return host, 27015
+
+    def _parse_mc_address(self, addr: str) -> tuple[str, int]:
+        if ":" in addr:
+            host, port_str = addr.rsplit(":", 1)
+            host = host.strip()
+            if not host:
+                raise ValueError("主机不能为空")
+            if not port_str.isdigit():
+                raise ValueError("端口必须是数字")
+            return host, int(port_str)
+        host = addr.strip()
+        if not host:
+            raise ValueError("主机不能为空")
+        return host, 25565
+
+    def _mc_query_api_base(self) -> str:
+        base = str(self._cfg("mc_query_api_base", "https://api.mcsrvstat.us/3")).strip().rstrip("/")
+        return base if self._is_http_url(base) else ""
+
+    def _mc_query_timeout(self) -> float:
+        timeout_ms = int(self._cfg("mc_timeout_ms", 5000))
+        return max(timeout_ms, 1000) / 1000.0
+
+    def _mc_render_mode(self) -> str:
+        mode = str(self._cfg("mc_render_mode", "text")).strip().lower()
+        return mode if mode in {"text", "image_text"} else "text"
+
+    def _mc_show_address(self) -> bool:
+        return bool(self._cfg("mc_show_address", True))
+
+    def _clean_mc_text(self, text: Any) -> str:
+        value = str(text or "")
+        if not value:
+            return ""
+        # Remove Minecraft color/format codes like §a, §l, §r.
+        value = re.sub(r"§[0-9A-FK-ORa-fk-or]", "", value)
+        # Normalize separators and whitespace.
+        value = value.replace("\r", " ").replace("\n", " ")
+        value = re.sub(r"\s+", " ", value).strip()
+        # Collapse long runs of decorative separators.
+        value = re.sub(r"[—\-=_]{6,}", " ", value).strip()
+        return value
+
+    async def _fetch_mc_status_api(self, host: str, port: int, timeout: float) -> Any | None:
+        base = self._mc_query_api_base()
+        if not base:
+            return None
+
+        url = f"{base}/{host}:{port}"
+        client = self._get_http_client()
+        try:
+            resp = await client.get(url, timeout=timeout)
+        except Exception as exc:
+            self._debug("mc status api request failed: %s", exc)
+            return None
+
+        if resp.status_code != 200:
+            self._debug("mc status api status=%s", resp.status_code)
+            return None
+
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            self._debug("mc status api invalid json: %s", exc)
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        online = bool(payload.get("online"))
+        players = payload.get("players") if isinstance(payload.get("players"), dict) else {}
+        players_online = int(self._parse_number(players.get("online"), 0))
+        players_max = int(self._parse_number(players.get("max"), 0))
+
+        version_data = payload.get("version")
+        version = ""
+        if isinstance(version_data, dict):
+            version = str(version_data.get("name") or version_data.get("raw") or "").strip()
+        else:
+            version = str(version_data or "").strip()
+
+        motd_data = payload.get("motd")
+        motd_clean: list[str] = []
+        if isinstance(motd_data, dict):
+            clean = motd_data.get("clean")
+            if isinstance(clean, list):
+                motd_clean = [self._clean_mc_text(x) for x in clean if self._clean_mc_text(x)]
+            elif isinstance(clean, str) and clean.strip():
+                cleaned = self._clean_mc_text(clean)
+                motd_clean = [cleaned] if cleaned else []
+        elif isinstance(motd_data, str) and motd_data.strip():
+            cleaned = self._clean_mc_text(motd_data)
+            motd_clean = [cleaned] if cleaned else []
+
+        player_list = players.get("list") if isinstance(players.get("list"), list) else []
+        player_names = [self._clean_mc_text(x) for x in player_list if self._clean_mc_text(x)]
+
+        return SimpleNamespace(
+            online=online,
+            host=str(payload.get("ip") or host),
+            port=int(self._parse_number(payload.get("port"), port)) or port,
+            server_name=self._clean_mc_text(payload.get("hostname") or payload.get("ip") or host),
+            software=self._clean_mc_text(payload.get("software") or "Minecraft"),
+            version=self._clean_mc_text(version),
+            motd_lines=motd_clean,
+            player_count=players_online,
+            max_players=players_max,
+            players=player_names,
+        )
 
     def _is_http_url(self, text: str) -> bool:
         return text.startswith("http://") or text.startswith("https://")
@@ -1859,12 +2009,83 @@ class HlymcnSignIn(Star):
 
     def _format_servers_list(self) -> str:
         servers = self._server_map()
-        if not servers:
+        mc_servers = self._mc_server_map()
+        if not servers and not mc_servers:
             return "未配置服务器列表"
         lines = ["当前服务器列表："]
-        for name, addr in servers.items():
-            lines.append(f"{name}: {addr}")
+        if servers:
+            lines.append("【A2S/CS2】")
+            for name, addr in servers.items():
+                lines.append(f"{name}: {addr}")
+        if mc_servers:
+            lines.append("【Minecraft】")
+            for name, addr in mc_servers.items():
+                lines.append(f"{name}: {addr}")
         return "\n".join(lines)
+
+    async def _handle_mc_query(self, event: AstrMessageEvent, name: str, addr: str):
+        try:
+            host, port = self._parse_mc_address(addr)
+        except ValueError as exc:
+            yield event.plain_result(f"MC服务器配置错误：{exc}")
+            return
+
+        info = await self._fetch_mc_status_api(host, port, self._mc_query_timeout())
+        if info is None:
+            yield event.plain_result("MC服务器查询失败，请稍后再试")
+            return
+
+        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        max_players_show = max(int(self._cfg("players_limit", 10)), 0)
+        player_text = "暂无"
+        if info.players:
+            shown = info.players[:max_players_show] if max_players_show > 0 else info.players
+            if shown:
+                lines = [f"{idx + 1}. {name}" for idx, name in enumerate(shown)]
+                if max_players_show > 0 and len(info.players) > max_players_show:
+                    lines.append(f"...（共{len(info.players)}人）")
+                player_text = "\n".join(lines)
+
+        motd = " / ".join(self._clean_mc_text(x) for x in info.motd_lines[:2] if self._clean_mc_text(x)).strip()
+        if not motd:
+            motd = "暂无"
+        status_text = "在线" if info.online else "离线"
+        response_lines = [
+            "Minecraft 服务器状态更新！",
+            "--------------------",
+            f"服务器别名：{name}",
+            f"服务器名称：{info.server_name or '未知'}",
+        ]
+        if self._mc_show_address():
+            response_lines.append(f"服务器地址：{host}:{port}")
+        response_lines.extend(
+            [
+                f"在线状态：{status_text}",
+                f"服务器核心：{info.software or '未知'}",
+                f"游戏版本：{info.version or '未知'}",
+                f"在线人数：{info.player_count}/{info.max_players}",
+                f"MOTD：{motd}",
+                "--------------------",
+                "玩家列表：",
+                player_text,
+                "--------------------",
+                f"查询时间：{now_text}",
+            ]
+        )
+        response = "\n".join(response_lines) + "\n"
+
+        if self._mc_render_mode() == "image_text":
+            header_urls = self._get_header_urls()
+            image_url = random.choice(header_urls) if header_urls else ""
+            if image_url and self._is_http_url(image_url):
+                chain = [
+                    Comp.Image.fromURL(image_url),
+                    Comp.Plain(response),
+                ]
+                yield event.chain_result(chain)
+                return
+
+        yield event.plain_result(response)
 
     async def _handle_stats_query(self, event: AstrMessageEvent):
         user_id = self._extract_user_id(event)
@@ -2500,12 +2721,13 @@ class HlymcnSignIn(Star):
                 rcon_request = (parts[1], parts[2])
 
         match = self._match_server_alias(text)
+        mc_match = self._match_mc_server_alias(text)
         is_signin = text == "签到"
         is_ip_list = text_lower == "ip"
         stats_keywords = self._stats_keywords()
         stats_keyword_set = {k.lower() for k in stats_keywords}
         is_stats = text in stats_keywords or text_lower in stats_keyword_set
-        if not is_signin and not match and not is_ip_list and not is_stats and not rcon_request:
+        if not is_signin and not match and not mc_match and not is_ip_list and not is_stats and not rcon_request:
             return
 
         self._debug("recv group message text=%r", text)
@@ -2548,6 +2770,12 @@ class HlymcnSignIn(Star):
         if match:
             name, addr = match
             async for result in self._handle_a2s_query(event, name, addr):
+                yield result
+            return
+
+        if mc_match:
+            name, addr = mc_match
+            async for result in self._handle_mc_query(event, name, addr):
                 yield result
 
     async def terminate(self):
