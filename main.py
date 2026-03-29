@@ -823,7 +823,25 @@ class HlymcnSignIn(Star):
             motd_clean = [cleaned] if cleaned else []
 
         player_list = players.get("list") if isinstance(players.get("list"), list) else []
-        player_names = [self._clean_mc_text(x) for x in player_list if self._clean_mc_text(x)]
+        player_names: list[str] = []
+        for item in player_list:
+            name_raw = item
+            if isinstance(item, dict):
+                name_raw = (
+                    item.get("name")
+                    or item.get("username")
+                    or item.get("player")
+                    or item.get("displayName")
+                    or ""
+                )
+            elif isinstance(item, str):
+                # Handle stringified dict payloads like "{'name': 'xxx', 'uuid': '...'}"
+                m = re.search(r"[\"']name[\"']\s*:\s*[\"']([^\"']+)[\"']", item)
+                if m:
+                    name_raw = m.group(1)
+            cleaned_name = self._clean_mc_text(name_raw)
+            if cleaned_name:
+                player_names.append(cleaned_name)
 
         return SimpleNamespace(
             online=online,
@@ -836,6 +854,12 @@ class HlymcnSignIn(Star):
             player_count=players_online,
             max_players=players_max,
             players=player_names,
+            ping_ms=self._parse_number(
+                (payload.get("debug") or {}).get("ping")
+                if isinstance(payload.get("debug"), dict)
+                else payload.get("latency") or payload.get("ping"),
+                0.0,
+            ),
         )
 
     def _is_http_url(self, text: str) -> bool:
@@ -1944,6 +1968,7 @@ class HlymcnSignIn(Star):
 
     def _estimate_mc_card_size(
         self,
+        title_text: str,
         info_items: list[tuple[str, str, str]],
         players_rows: list[tuple[int, str]],
         scale: float = 1.2,
@@ -1975,8 +2000,10 @@ class HlymcnSignIn(Star):
         )
         info_lines_count = info_layout.info_lines_count
 
-        title_height = title_font.getbbox("测")[3]
-        title_block_height = title_height + divider_gap * 2
+        title_text = (title_text or "").strip() or "Minecraft 服务器"
+        title_lines = self._wrap_text(title_text, title_font, card_width - padding * 2)
+        title_line_height = title_font.getbbox("测")[3] + int(8 * scale)
+        title_block_height = max(1, len(title_lines)) * title_line_height + divider_gap * 2
         info_height = info_lines_count * line_height
         rows_count = max(1, len(players_rows))
         players_bottom_padding = int(8 * scale)
@@ -2008,8 +2035,9 @@ class HlymcnSignIn(Star):
         info_items: list[tuple[str, str, str]],
         players_rows: list[tuple[int, str]],
         now_text: str,
+        ping_ms: float,
     ) -> bytes | None:
-        card_width, card_height = self._estimate_mc_card_size(info_items, players_rows)
+        card_width, card_height = self._estimate_mc_card_size(title_text, info_items, players_rows)
         header_image = await self._get_header_image(card_width, card_height)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -2020,6 +2048,7 @@ class HlymcnSignIn(Star):
                 info_items,
                 players_rows,
                 now_text,
+                ping_ms,
                 header_image,
             ),
         )
@@ -2030,10 +2059,11 @@ class HlymcnSignIn(Star):
         info_items: list[tuple[str, str, str]],
         players_rows: list[tuple[int, str]],
         now_text: str,
+        ping_ms: float,
         header_image: Image.Image | None,
     ) -> bytes | None:
         scale = 1.2
-        card_width, card_height = self._estimate_mc_card_size(info_items, players_rows, scale=scale)
+        card_width, card_height = self._estimate_mc_card_size(title_text, info_items, players_rows, scale=scale)
         padding = int(28 * scale)
         outer_margin = 0
         corner_radius = 0
@@ -2055,9 +2085,12 @@ class HlymcnSignIn(Star):
         divider_gap = int(12 * scale)
         players_header_gap = int(8 * scale)
         title_height = title_font.getbbox("测")[3]
+        title_line_height = title_height + int(8 * scale)
         players_bottom_padding = int(8 * scale)
         rows_count = max(1, len(players_rows))
-        title_block_height = title_height + divider_gap * 2
+        title_text = (title_text or "").strip() or "Minecraft 服务器"
+        title_lines = self._wrap_text(title_text, title_font, card_width - padding * 2)
+        title_block_height = max(1, len(title_lines)) * title_line_height + divider_gap * 2
         title_area_top = max(int(16 * scale), padding - int(10 * scale))
 
         col_gap = int(36 * scale)
@@ -2108,10 +2141,11 @@ class HlymcnSignIn(Star):
         card.paste(bg_rgba, (0, 0), mask)
 
         draw = ImageDraw.Draw(card)
-        title_text = (title_text or "").strip() or "Minecraft 服务器"
         y = title_area_top
-        title_y = y + (title_block_height - title_height) // 2 - 2
-        draw.text((padding, title_y), title_text, font=title_font, fill=text_color)
+        title_y = y + divider_gap
+        for line in title_lines:
+            draw.text((padding, title_y), line, font=title_font, fill=text_color)
+            title_y += title_line_height
         y += title_block_height
         draw.line((padding, y, card_width - padding, y), fill=line_color, width=2)
         y += divider_gap
@@ -2128,9 +2162,9 @@ class HlymcnSignIn(Star):
             text_color,
             line_height,
             value_gap,
-            "__none_ping__",
-            "__none_game__",
-            0.0,
+            "延迟",
+            "游戏类型",
+            ping_ms,
         )
 
         y += divider_gap
@@ -2386,6 +2420,7 @@ class HlymcnSignIn(Star):
         if not motd:
             motd = "暂无"
         status_text = "在线" if info.online else "离线"
+        official_site = self._get_server_official_site(name, host, port)
         response_lines = [
             "Minecraft 服务器状态更新！",
             "--------------------",
@@ -2393,10 +2428,9 @@ class HlymcnSignIn(Star):
         ]
         if self._mc_show_address():
             response_lines.append(f"地址：{host}:{port}")
+        response_lines.append(f"网站：{official_site}")
         response_lines.append(f"状态：{status_text}")
-        software = (info.software or "").strip()
-        if software and software.lower() not in {"minecraft", "vanilla"}:
-            response_lines.append(f"类型：{software}")
+        response_lines.append("游戏：Minecraft")
         response_lines.extend(
             [
                 f"游戏版本：{info.version or '未知'}",
@@ -2428,24 +2462,24 @@ class HlymcnSignIn(Star):
                 yield event.plain_result("头图缓存为空，正在准备数据，请稍候...")
                 await self._prefetch_headers(1, int(self._cfg("header_cache_limit", 30)))
 
-            info_items: list[tuple[str, str, str]] = []
-            if self._mc_show_address():
-                info_items.append(("", "地址", f"{host}:{port}"))
-            info_items.append(("", "状态", status_text))
-            if software and software.lower() not in {"minecraft", "vanilla"}:
-                info_items.append(("", "类型", software))
-            info_items.extend(
-                [
-                    ("", "游戏版本", info.version or "未知"),
-                    ("", "在线人数", f"{info.player_count}/{info.max_players}"),
-                ]
-            )
+            ping_ms = float(getattr(info, "ping_ms", 0.0) or 0.0)
+            ping_text = f"{ping_ms:.0f} ms" if ping_ms > 0 else "--"
+            addr_text = f"{host}:{port}" if self._mc_show_address() else "已隐藏"
+            info_items: list[tuple[str, str, str]] = [
+                ("", "官方网站", official_site),
+                ("", "地址", addr_text),
+                ("", "人数", f"{info.player_count}/{info.max_players}"),
+                ("", "游戏版本", info.version or "未知"),
+                ("", "游戏类型", "Minecraft"),
+                ("", "延迟", ping_text),
+            ]
             mc_players_rows = self._build_mc_card_players_rows(info.players, max_players_show)
             image_bytes = await self._render_mc_card_pil(
                 title_text=motd,
                 info_items=info_items,
                 players_rows=mc_players_rows,
                 now_text=now_text,
+                ping_ms=ping_ms,
             )
             if image_bytes and isinstance(event, AiocqhttpMessageEvent):
                 base64_str = base64.b64encode(image_bytes).decode("utf-8")
