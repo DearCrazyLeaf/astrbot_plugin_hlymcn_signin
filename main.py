@@ -3,6 +3,8 @@
 from typing import Any, Iterable
 from datetime import datetime
 from io import BytesIO
+from html import unescape
+import unicodedata
 import base64
 import struct
 import re
@@ -288,6 +290,27 @@ class HlymcnSignIn(Star):
     def _rcon_password(self) -> str:
         return str(self._cfg("rcon_password", "")).strip()
 
+    def _rcon_server_map(self) -> dict[str, str]:
+        raw = self._cfg("rcon_servers", {})
+        mapping: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                k = str(key).strip()
+                v = str(value).strip()
+                if k and v:
+                    mapping[k] = v
+        elif isinstance(raw, list):
+            for item in raw:
+                text = str(item).strip()
+                if not text or "=" not in text:
+                    continue
+                key, value = text.split("=", 1)
+                k = key.strip()
+                v = value.strip()
+                if k and v:
+                    mapping[k] = v
+        return mapping
+
     def _rcon_password_map(self) -> dict[str, str]:
         raw = self._cfg("rcon_passwords", {})
         mapping: dict[str, str] = {}
@@ -309,22 +332,15 @@ class HlymcnSignIn(Star):
                     mapping[k] = v
         return mapping
 
-    def _rcon_password_for_server(self, alias: str, host: str, port: int) -> str:
+    def _rcon_password_for_alias(self, alias: str) -> str:
         mapping = self._rcon_password_map()
         if alias and alias in mapping:
             return mapping[alias]
-        addr = f"{host}:{port}"
-        if addr in mapping:
-            return mapping[addr]
         if alias:
             lowered = alias.lower()
             for key, value in mapping.items():
                 if key.lower() == lowered:
                     return value
-        lowered_addr = addr.lower()
-        for key, value in mapping.items():
-            if key.lower() == lowered_addr:
-                return value
         return self._rcon_password()
 
     def _rcon_prefix(self) -> str:
@@ -353,6 +369,33 @@ class HlymcnSignIn(Star):
             return False
         user_id = self._extract_user_id(event)
         return bool(user_id) and user_id in allowed
+
+    def _resolve_rcon_target(self, alias: str) -> tuple[str, str, int] | None:
+        key = alias.strip()
+        if not key:
+            return None
+
+        # RCON target is resolved only from dedicated rcon_servers map.
+        targets = self._rcon_server_map()
+        target_addr = targets.get(key, "")
+        if not target_addr:
+            lowered = key.lower()
+            for name, addr in targets.items():
+                if name.lower() == lowered:
+                    target_addr = addr
+                    key = name
+                    break
+        if not target_addr:
+            return None
+
+        target_text = target_addr.strip()
+        if ":" not in target_text:
+            return None
+        try:
+            host, port = self._parse_address(target_text)
+        except ValueError:
+            return None
+        return key, host, port
 
     # --- parsing & formatting ---
     def _parse_number(self, value: Any, default: float = 0.0) -> float:
@@ -485,18 +528,12 @@ class HlymcnSignIn(Star):
 
         return info, players
 
-    async def _handle_rcon_command(self, event: AstrMessageEvent, name: str, addr: str, command: str):
+    async def _handle_rcon_command(self, event: AstrMessageEvent, name: str, host: str, port: int, command: str):
         if not self._is_rcon_admin(event):
             yield event.plain_result("RCON 仅管理员可用")
             return
 
-        try:
-            host, port = self._parse_address(addr)
-        except ValueError as exc:
-            yield event.plain_result(f"服务器地址错误：{exc}")
-            return
-
-        password = self._rcon_password_for_server(name, host, port)
+        password = self._rcon_password_for_alias(name)
         if not password:
             yield event.plain_result("RCON 未配置，请设置 rcon_password（或 rcon_passwords）")
             return
@@ -685,13 +722,13 @@ class HlymcnSignIn(Star):
 
     def _mc_render_mode(self) -> str:
         mode = str(self._cfg("mc_render_mode", "text")).strip().lower()
-        return mode if mode in {"text", "image_text"} else "text"
+        return mode if mode in {"text", "image_text", "card"} else "text"
 
     def _mc_show_address(self) -> bool:
         return bool(self._cfg("mc_show_address", True))
 
     def _clean_mc_text(self, text: Any) -> str:
-        value = str(text or "")
+        value = unescape(str(text or ""))
         if not value:
             return ""
         # Remove Minecraft color/format codes like §a, §l, §r.
@@ -700,8 +737,39 @@ class HlymcnSignIn(Star):
         value = value.replace("\r", " ").replace("\n", " ")
         value = re.sub(r"\s+", " ", value).strip()
         # Collapse long runs of decorative separators.
-        value = re.sub(r"[—\-=_]{6,}", " ", value).strip()
+        value = re.sub(r"[—\-=_─━]{6,}", " ", value).strip()
         return value
+
+    def _display_width(self, text: str) -> int:
+        width = 0
+        for ch in text:
+            width += 2 if unicodedata.east_asian_width(ch) in {"W", "F", "A"} else 1
+        return width
+
+    def _wrap_by_display_width(self, text: str, max_width: int) -> list[str]:
+        text = str(text or "")
+        if not text:
+            return [""]
+        if max_width <= 1:
+            return [text]
+
+        lines: list[str] = []
+        current: list[str] = []
+        current_width = 0
+
+        for ch in text:
+            ch_width = 2 if unicodedata.east_asian_width(ch) in {"W", "F", "A"} else 1
+            if current and current_width + ch_width > max_width:
+                lines.append("".join(current).rstrip())
+                current = [ch]
+                current_width = ch_width
+                continue
+            current.append(ch)
+            current_width += ch_width
+
+        if current:
+            lines.append("".join(current).rstrip())
+        return lines or [""]
 
     async def _fetch_mc_status_api(self, host: str, port: int, timeout: float) -> Any | None:
         base = self._mc_query_api_base()
@@ -762,7 +830,7 @@ class HlymcnSignIn(Star):
             host=str(payload.get("ip") or host),
             port=int(self._parse_number(payload.get("port"), port)) or port,
             server_name=self._clean_mc_text(payload.get("hostname") or payload.get("ip") or host),
-            software=self._clean_mc_text(payload.get("software") or "Minecraft"),
+            software=self._clean_mc_text(payload.get("software") or ""),
             version=self._clean_mc_text(version),
             motd_lines=motd_clean,
             player_count=players_online,
@@ -1861,6 +1929,274 @@ class HlymcnSignIn(Star):
         base.save(output, format="JPEG", quality=85, optimize=True)
         return output.getvalue()
 
+    def _build_mc_card_players_rows(
+        self,
+        player_names: list[str],
+        max_players_show: int,
+    ) -> list[tuple[int, str]]:
+        if not player_names:
+            return [(1, "暂无玩家")]
+        shown = player_names[:max_players_show] if max_players_show > 0 else player_names
+        rows: list[tuple[int, str]] = [(idx + 1, name) for idx, name in enumerate(shown)]
+        if max_players_show > 0 and len(player_names) > max_players_show:
+            rows.append((len(rows) + 1, f"...（共{len(player_names)}人）"))
+        return rows
+
+    def _estimate_mc_card_size(
+        self,
+        info_items: list[tuple[str, str, str]],
+        players_rows: list[tuple[int, str]],
+        scale: float = 1.2,
+    ) -> tuple[int, int]:
+        card_width = int(820 * scale)
+        padding = int(28 * scale)
+        line_height = int(26 * scale)
+        players_title_height = int(26 * scale)
+        players_line_height = int(20 * scale)
+        divider_gap = int(12 * scale)
+        players_header_gap = int(8 * scale)
+        title_font = self._load_font(int(26 * scale), bold=True)
+        label_font = self._load_font(int(18 * scale), bold=True)
+        value_font = self._load_font(int(18 * scale), bold=False)
+        small_font = self._load_font(int(14 * scale), bold=False)
+
+        col_gap = int(36 * scale)
+        label_min_w = int(120 * scale)
+        value_gap = int(16 * scale)
+        info_layout = self._calc_info_layout(
+            info_items,
+            label_font,
+            value_font,
+            card_width,
+            padding,
+            col_gap,
+            label_min_w,
+            value_gap,
+        )
+        info_lines_count = info_layout.info_lines_count
+
+        title_height = title_font.getbbox("测")[3]
+        title_block_height = title_height + divider_gap * 2
+        info_height = info_lines_count * line_height
+        rows_count = max(1, len(players_rows))
+        players_bottom_padding = int(8 * scale)
+        players_height = (
+            players_title_height
+            + players_header_gap
+            + players_line_height
+            + rows_count * players_line_height
+            + players_bottom_padding
+        )
+        footer_height = small_font.getbbox("测")[3] + int(8 * scale)
+        bottom_padding = int(4 * scale)
+        footer_line_gap = max(1, int(divider_gap * 0.35))
+        footer_block_height = footer_line_gap + footer_height + bottom_padding
+        content_height = (
+            title_block_height
+            + info_height
+            + divider_gap * 2
+            + players_height
+            + footer_block_height
+        )
+        title_area_top = max(int(16 * scale), padding - int(10 * scale))
+        card_height = title_area_top + content_height
+        return card_width, card_height
+
+    async def _render_mc_card_pil(
+        self,
+        title_text: str,
+        info_items: list[tuple[str, str, str]],
+        players_rows: list[tuple[int, str]],
+        now_text: str,
+    ) -> bytes | None:
+        card_width, card_height = self._estimate_mc_card_size(info_items, players_rows)
+        header_image = await self._get_header_image(card_width, card_height)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(
+                self._render_mc_card_pil_sync,
+                title_text,
+                info_items,
+                players_rows,
+                now_text,
+                header_image,
+            ),
+        )
+
+    def _render_mc_card_pil_sync(
+        self,
+        title_text: str,
+        info_items: list[tuple[str, str, str]],
+        players_rows: list[tuple[int, str]],
+        now_text: str,
+        header_image: Image.Image | None,
+    ) -> bytes | None:
+        scale = 1.2
+        card_width, card_height = self._estimate_mc_card_size(info_items, players_rows, scale=scale)
+        padding = int(28 * scale)
+        outer_margin = 0
+        corner_radius = 0
+        bg_color = (44, 44, 44)
+        card_color = (58, 58, 58)
+        line_color = (75, 75, 75)
+        text_color = (245, 245, 245)
+        muted_color = (160, 166, 173)
+        label_color = (170, 176, 182)
+
+        title_font = self._load_font(int(26 * scale), bold=True)
+        label_font = self._load_font(int(18 * scale), bold=True)
+        value_font = self._load_font(int(18 * scale), bold=False)
+        small_font = self._load_font(int(14 * scale), bold=False)
+
+        line_height = int(26 * scale)
+        players_title_height = int(26 * scale)
+        players_line_height = int(20 * scale)
+        divider_gap = int(12 * scale)
+        players_header_gap = int(8 * scale)
+        title_height = title_font.getbbox("测")[3]
+        players_bottom_padding = int(8 * scale)
+        rows_count = max(1, len(players_rows))
+        title_block_height = title_height + divider_gap * 2
+        title_area_top = max(int(16 * scale), padding - int(10 * scale))
+
+        col_gap = int(36 * scale)
+        label_min_w = int(120 * scale)
+        value_gap = int(16 * scale)
+        info_layout = self._calc_info_layout(
+            info_items,
+            label_font,
+            value_font,
+            card_width,
+            padding,
+            col_gap,
+            label_min_w,
+            value_gap,
+        )
+        info_height = info_layout.info_lines_count * line_height
+
+        base = Image.new(
+            "RGB",
+            (card_width + outer_margin * 2, card_height + outer_margin * 2),
+            bg_color,
+        )
+        card = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 0))
+        card_draw = ImageDraw.Draw(card)
+        card_draw.rounded_rectangle(
+            [0, 0, card_width, card_height],
+            radius=corner_radius,
+            fill=card_color,
+        )
+
+        bg = header_image
+        if bg is not None and (bg.width != card_width or bg.height != card_height):
+            bg = self._crop_cover(bg, card_width, card_height)
+        if bg is None:
+            bg = Image.new("RGB", (card_width, card_height), (60, 60, 60))
+        bg_rgba = bg.convert("RGBA")
+        bg_blur = bg_rgba.filter(ImageFilter.GaussianBlur(2.4))
+        bg_rgba = Image.blend(bg_rgba, bg_blur, 0.42)
+        overlay = Image.new("RGBA", (card_width, card_height), (0, 0, 0, 140))
+        bg_rgba = Image.alpha_composite(bg_rgba, overlay)
+
+        mask = Image.new("L", (card_width, card_height), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            [0, 0, card_width, card_height],
+            radius=corner_radius,
+            fill=255,
+        )
+        card.paste(bg_rgba, (0, 0), mask)
+
+        draw = ImageDraw.Draw(card)
+        title_text = (title_text or "").strip() or "Minecraft 服务器"
+        y = title_area_top
+        title_y = y + (title_block_height - title_height) // 2 - 2
+        draw.text((padding, title_y), title_text, font=title_font, fill=text_color)
+        y += title_block_height
+        draw.line((padding, y, card_width - padding, y), fill=line_color, width=2)
+        y += divider_gap
+
+        y = self._draw_info_section(
+            draw,
+            y,
+            info_layout,
+            padding,
+            col_gap,
+            label_font,
+            value_font,
+            label_color,
+            text_color,
+            line_height,
+            value_gap,
+            "__none_ping__",
+            "__none_game__",
+            0.0,
+        )
+
+        y += divider_gap
+        draw.line((padding, y, card_width - padding, y), fill=line_color, width=1)
+        y += divider_gap
+
+        draw.text((padding, y), "玩家列表", font=label_font, fill=text_color)
+        y += players_title_height
+
+        table_edge = max(int(8 * scale), padding - int(12 * scale))
+        table_x = table_edge
+        table_right = card_width - table_edge
+        col_gap_players = int(12 * scale)
+        col_idx_w = int(36 * scale)
+        col_name_w = max(120, table_right - table_x - col_idx_w - col_gap_players)
+        x_idx = table_x
+        x_name = x_idx + col_idx_w + col_gap_players
+
+        draw.text((x_idx, y), "#", font=small_font, fill=muted_color)
+        draw.text((x_name, y), "名称", font=small_font, fill=muted_color)
+        y += players_line_height + players_header_gap
+
+        row_overlay = Image.new("RGBA", (card_width, card.height), (0, 0, 0, 0))
+        row_draw = ImageDraw.Draw(row_overlay)
+        row_records: list[tuple[int, str, int]] = []
+        for idx, player_name in players_rows:
+            row_fill = (255, 255, 255, 16) if idx % 2 == 0 else (255, 255, 255, 8)
+            row_outline = (255, 255, 255, 22)
+            row_top = y - 1
+            row_bottom = y + players_line_height - 1
+            row_draw.rectangle(
+                [table_x - 2, row_top, table_right + 2, row_bottom],
+                fill=row_fill,
+                outline=row_outline,
+                width=1,
+            )
+            row_records.append((idx, player_name, y))
+            y += players_line_height
+
+        card = Image.alpha_composite(card, row_overlay)
+        draw = ImageDraw.Draw(card)
+        for idx, player_name, row_y in row_records:
+            draw.text((x_idx, row_y), str(idx), font=small_font, fill=text_color)
+            draw.text((x_name, row_y), player_name, font=small_font, fill=text_color)
+
+        y += players_bottom_padding
+        footer_font = self._load_font(int(12 * scale), bold=False)
+        footer_line_gap = max(1, int(divider_gap * 0.35))
+        bottom_padding = int(4 * scale)
+        self._draw_footer(
+            draw,
+            card_width,
+            padding,
+            line_color,
+            now_text,
+            footer_font,
+            footer_line_gap,
+            bottom_padding,
+            card_height,
+        )
+
+        base.paste(card, (outer_margin, outer_margin), card)
+        output = BytesIO()
+        base.save(output, format="JPEG", quality=85, optimize=True)
+        return output.getvalue()
+
     @filter.command("prefetch_header", alias={"预载头图"})
     async def prefetch_header(self, event: AstrMessageEvent):
         """预载头图到缓存"""
@@ -2053,28 +2389,84 @@ class HlymcnSignIn(Star):
         response_lines = [
             "Minecraft 服务器状态更新！",
             "--------------------",
-            f"服务器别名：{name}",
-            f"服务器名称：{info.server_name or '未知'}",
+            motd,
         ]
         if self._mc_show_address():
-            response_lines.append(f"服务器地址：{host}:{port}")
+            response_lines.append(f"地址：{host}:{port}")
+        response_lines.append(f"状态：{status_text}")
+        software = (info.software or "").strip()
+        if software and software.lower() not in {"minecraft", "vanilla"}:
+            response_lines.append(f"类型：{software}")
         response_lines.extend(
             [
-                f"在线状态：{status_text}",
-                f"服务器核心：{info.software or '未知'}",
                 f"游戏版本：{info.version or '未知'}",
                 f"在线人数：{info.player_count}/{info.max_players}",
-                f"MOTD：{motd}",
                 "--------------------",
                 "玩家列表：",
                 player_text,
                 "--------------------",
-                f"查询时间：{now_text}",
+                "查询时间：",
+                now_text,
             ]
         )
-        response = "\n".join(response_lines) + "\n"
+        divider = "--------------------"
+        max_line_width = self._display_width(divider)
+        wrapped_lines: list[str] = []
+        for line in response_lines:
+            parts = str(line).splitlines() or [""]
+            for part in parts:
+                if not part or part == divider:
+                    wrapped_lines.append(part)
+                    continue
+                wrapped_lines.extend(self._wrap_by_display_width(part, max_line_width))
+        response = "\n".join(wrapped_lines) + "\n"
 
-        if self._mc_render_mode() == "image_text":
+        mc_render_mode = self._mc_render_mode()
+
+        if mc_render_mode == "card":
+            if not self._list_header_cache() and self._get_header_urls():
+                yield event.plain_result("头图缓存为空，正在准备数据，请稍候...")
+                await self._prefetch_headers(1, int(self._cfg("header_cache_limit", 30)))
+
+            info_items: list[tuple[str, str, str]] = []
+            if self._mc_show_address():
+                info_items.append(("", "地址", f"{host}:{port}"))
+            info_items.append(("", "状态", status_text))
+            if software and software.lower() not in {"minecraft", "vanilla"}:
+                info_items.append(("", "类型", software))
+            info_items.extend(
+                [
+                    ("", "游戏版本", info.version or "未知"),
+                    ("", "在线人数", f"{info.player_count}/{info.max_players}"),
+                ]
+            )
+            mc_players_rows = self._build_mc_card_players_rows(info.players, max_players_show)
+            image_bytes = await self._render_mc_card_pil(
+                title_text=motd,
+                info_items=info_items,
+                players_rows=mc_players_rows,
+                now_text=now_text,
+            )
+            if image_bytes and isinstance(event, AiocqhttpMessageEvent):
+                base64_str = base64.b64encode(image_bytes).decode("utf-8")
+                image_file_str = f"base64://{base64_str}"
+                payload = {"message": [{"type": "image", "data": {"file": image_file_str}}]}
+                try:
+                    if event.is_private_chat():
+                        payload["user_id"] = int(event.get_sender_id())
+                        action = "send_private_msg"
+                    else:
+                        payload["group_id"] = int(event.get_group_id())
+                        action = "send_group_msg"
+                    await event.bot.api.call_action(action, **payload)
+                    event.stop_event()
+                    asyncio.create_task(self._silent_refresh_header_cache())
+                    return
+                except Exception as exc:
+                    logger.error("mc card base64 send failed: %s", exc)
+            self._debug("mc card render failed: no image bytes")
+
+        if mc_render_mode == "image_text":
             header_urls = self._get_header_urls()
             image_url = random.choice(header_urls) if header_urls else ""
             if image_url and self._is_http_url(image_url):
@@ -2744,12 +3136,12 @@ class HlymcnSignIn(Star):
 
         if rcon_request:
             alias, command = rcon_request
-            match_alias = self._match_server_alias(alias)
-            if not match_alias:
-                yield event.plain_result("未找到服务器别名")
+            target = self._resolve_rcon_target(alias)
+            if not target:
+                yield event.plain_result("未找到RCON目标别名，请检查 rcon_servers 配置")
                 return
-            name, addr = match_alias
-            async for result in self._handle_rcon_command(event, name, addr, command):
+            name, host, port = target
+            async for result in self._handle_rcon_command(event, name, host, port, command):
                 yield result
             return
 

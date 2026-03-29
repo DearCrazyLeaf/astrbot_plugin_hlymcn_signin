@@ -127,9 +127,10 @@
         "default": "text",
         "options": [
           "text",
-          "image_text"
+          "image_text",
+          "card"
         ],
-        "hint": "text 纯文本；image_text 头图+文本"
+        "hint": "text ????image_text ??+???card ??????????????"
       },
       "mc_show_address": {
         "description": "显示服务器地址",
@@ -142,13 +143,13 @@
   "local_rcon": {
     "description": "本地 RCON 设置",
     "type": "object",
-    "hint": "RCON 命令权限与连接参数",
+    "hint": "RCON 命令权限与连接参数（仅使用 rcon_servers，不再自动匹配查服端口）",
     "items": {
       "rcon_admin_ids": {
         "description": "RCON 管理员QQ列表",
         "type": "list",
         "default": [],
-        "hint": "为空则禁用 RCON，建议只配置管理员QQ",
+        "hint": "为空则禁用 RCON，建议仅配置管理员QQ",
         "items": {
           "type": "string"
         }
@@ -159,17 +160,26 @@
         "default": "rcon",
         "hint": "例如 rcon <别名> <命令>"
       },
+      "rcon_servers": {
+        "description": "RCON 服务器地址列表",
+        "type": "list",
+        "default": [],
+        "hint": "每项格式：别名=host:rcon端口；示例：mc=1.2.3.4:25575",
+        "items": {
+          "type": "string"
+        }
+      },
       "rcon_password": {
         "description": "RCON 全局密码",
         "type": "string",
         "default": "",
-        "hint": "用于直连服务器 RCON，所有服务器共用"
+        "hint": "所有 RCON 目标共用密码（可被 rcon_passwords 覆盖）"
       },
       "rcon_passwords": {
-        "description": "RCON 服务器专属密码",
+        "description": "RCON 别名专属密码",
         "type": "list",
         "default": [],
-        "hint": "每项格式：别名=密码 或 ip:port=密码，命中后会覆盖全局 rcon_password",
+        "hint": "每项格式：别名=密码；命中后覆盖全局 rcon_password",
         "items": {
           "type": "string"
         }

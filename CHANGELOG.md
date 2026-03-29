@@ -2,13 +2,21 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
+## v0.8.5
+
+### 变更
+- 为MC查服新增卡片模式
+
+### 优化
+- RCON 板块重构
+
+<details>
+<summary>历史版本（点击展开）</summary>
+
 ## v0.8.4
 
 ### 变更
 - 新增MC服务器查询逻辑，使用独立分区配置，与A2S分离
-
-<details>
-<summary>历史版本（点击展开）</summary>
 
 ## v0.8.3
 
