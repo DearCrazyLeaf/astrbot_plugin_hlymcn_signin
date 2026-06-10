@@ -16,7 +16,7 @@
 - ✅ 群聊签到（依赖后端）
 - ✅ 玩家数据查询（依赖后端）
 - ✅ CS2/A2S 查服（可本地直查，也可后端增强）
-- ✅ Minecraft 查服（独立配置，不走全局后端）
+- ✅ Minecraft 查服（直连查询，不走全局后端）
 - ✅ 本地 RCON 直连执行（不依赖后端 RCON 转发）
 - ✅ 图文卡片输出、头图缓存、地图封面回退
 
@@ -84,10 +84,9 @@ AstrBot WebUI -> 插件 -> HLYM服务器工具 -> 插件配置
   - `header`：使用自定义头图
   - `map_cover`：优先使用后端地图封面，失败自动回退头图
 
-### 3) `minecraft_query`（MC 独立查询）
+### 3) `minecraft_query`（MC 直连查询）
 
 - `mc_servers`：MC 别名映射，格式 `别名=host:port`（缺省端口默认 `25565`）
-- `mc_query_api_base`：MC 查询 API 根地址
 - `mc_timeout_ms`：查询超时
 - `mc_render_mode`：`text` / `image_text`
 - `mc_show_address`：是否在结果中显示服务器地址
@@ -268,7 +267,7 @@ MC 输出已做适配：
   - 若开启 `server_status_api_fallback=true`，后端失败后还会回退到 A2S 直连查询（文本数据仍可用）。
 
 > [!NOTE]
-> `minecraft_query` 是独立模块，不依赖上述后端接口，使用 `mc_query_api_base` 直查。
+> `minecraft_query` 是独立模块，不依赖上述后端接口，使用 Minecraft status ping 直连查询。
 
 ---
 

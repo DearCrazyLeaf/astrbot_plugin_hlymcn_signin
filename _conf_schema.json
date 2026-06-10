@@ -97,9 +97,9 @@
     }
   },
   "minecraft_query": {
-    "description": "Minecraft 查询（独立后端）",
+    "description": "Minecraft 查询（独立直连）",
     "type": "object",
-    "hint": "MC 查询不走全局后端，使用独立 API 配置",
+    "hint": "MC 查询不走全局后端，直接使用 Minecraft status ping 协议直连查询",
     "items": {
       "mc_servers": {
         "description": "Minecraft 服务器别名列表",
@@ -109,12 +109,6 @@
         "items": {
           "type": "string"
         }
-      },
-      "mc_query_api_base": {
-        "description": "Minecraft 查询 API",
-        "type": "string",
-        "default": "https://api.mcsrvstat.us/3",
-        "hint": "示例：https://api.mcsrvstat.us/3"
       },
       "mc_timeout_ms": {
         "description": "Minecraft 查询超时(毫秒)",

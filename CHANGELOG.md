@@ -2,13 +2,18 @@
 
 本文档记录 `astrbot_plugin_hlymcn_signin` 的版本变更。
 
+## v0.9.0
+
+### 变更
+- 移除 MC 查询外部 API 配置，改为直接使用 Minecraft status ping 协议直连查询，提升查询稳定性
+
+<details>
+<summary>历史版本（点击展开）</summary>
+
 ## v0.8.9
 
 ### 修复
 - MC卡片模式下显示人数问题
-
-<details>
-<summary>历史版本（点击展开）</summary>
 
 ## v0.8.8
 

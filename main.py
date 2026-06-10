@@ -8,6 +8,8 @@ import unicodedata
 import base64
 import struct
 import re
+import json
+import time
 from pathlib import Path
 from functools import partial
 import random
@@ -712,10 +714,6 @@ class HlymcnSignIn(Star):
             raise ValueError("主机不能为空")
         return host, 25565
 
-    def _mc_query_api_base(self) -> str:
-        base = str(self._cfg("mc_query_api_base", "https://api.mcsrvstat.us/3")).strip().rstrip("/")
-        return base if self._is_http_url(base) else ""
-
     def _mc_query_timeout(self) -> float:
         timeout_ms = int(self._cfg("mc_timeout_ms", 5000))
         return max(timeout_ms, 1000) / 1000.0
@@ -772,101 +770,175 @@ class HlymcnSignIn(Star):
         return lines or [""]
 
     async def _fetch_mc_status_api(self, host: str, port: int, timeout: float) -> Any | None:
-        base = self._mc_query_api_base()
-        if not base:
-            return None
+        # Use native Minecraft status ping protocol instead of external HTTP query APIs.
+        for protocol_version in (754, 498, 47):
+            try:
+                info = await self._fetch_mc_status_ping(host, port, timeout, protocol_version)
+                if info is not None:
+                    return info
+            except Exception as exc:
+                self._debug("mc status ping protocol=%s failed: %s", protocol_version, exc)
+        return None
 
-        url = f"{base}/{host}:{port}"
-        client = self._get_http_client()
+    def _mc_pack_varint(self, value: int) -> bytes:
+        buffer = bytearray()
+        while True:
+            temp = value & 0x7F
+            value >>= 7
+            if value != 0:
+                temp |= 0x80
+            buffer.append(temp)
+            if value == 0:
+                break
+        return bytes(buffer)
+
+    def _mc_read_varint_from_bytes(self, data: bytes, offset: int = 0) -> tuple[int, int]:
+        value = 0
+        shift = 0
+        for _ in range(5):
+            if offset >= len(data):
+                raise ValueError("VarInt decode failed")
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 0x7F) << shift
+            if not (byte & 0x80):
+                return value, offset
+            shift += 7
+        raise ValueError("VarInt too large")
+
+    async def _mc_read_varint(self, reader: asyncio.StreamReader, timeout: float) -> int:
+        value = 0
+        shift = 0
+        for _ in range(5):
+            byte_data = await asyncio.wait_for(reader.readexactly(1), timeout=timeout)
+            byte = byte_data[0]
+            value |= (byte & 0x7F) << shift
+            if not (byte & 0x80):
+                return value
+            shift += 7
+        raise ValueError("VarInt too large")
+
+    def _mc_description_to_text(self, description: Any) -> str:
+        if description is None:
+            return ""
+        if isinstance(description, str):
+            return description
+        if isinstance(description, dict):
+            parts: list[str] = [str(description.get("text") or "")]
+            extra = description.get("extra")
+            if isinstance(extra, list):
+                parts.extend(self._mc_description_to_text(item) for item in extra)
+            return "".join(part for part in parts if part)
+        if isinstance(description, list):
+            return "".join(self._mc_description_to_text(item) for item in description)
+        return str(description)
+
+    async def _fetch_mc_status_ping(self, host: str, port: int, timeout: float, protocol_version: int) -> Any | None:
         try:
-            resp = await client.get(url, timeout=timeout)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
         except Exception as exc:
-            self._debug("mc status api request failed: %s", exc)
-            return None
-
-        if resp.status_code != 200:
-            self._debug("mc status api status=%s", resp.status_code)
+            self._debug("mc status ping connect failed: %s", exc)
             return None
 
         try:
-            payload = resp.json()
+            address_bytes = host.encode("utf-8")
+            handshake = bytearray()
+            handshake += self._mc_pack_varint(0)
+            handshake += self._mc_pack_varint(protocol_version)
+            handshake += self._mc_pack_varint(len(address_bytes))
+            handshake += address_bytes
+            handshake += struct.pack(">H", port)
+            handshake += self._mc_pack_varint(1)
+            packet = self._mc_pack_varint(len(handshake)) + handshake
+
+            status_request = self._mc_pack_varint(1) + self._mc_pack_varint(0)
+
+            writer.write(packet)
+            writer.write(status_request)
+            await writer.drain()
+
+            start_time = time.perf_counter()
+            length = await self._mc_read_varint(reader, timeout)
+            data = await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
+            ping_ms = max(0.0, (time.perf_counter() - start_time) * 1000.0)
+
+            packet_id, offset = self._mc_read_varint_from_bytes(data, 0)
+            if packet_id != 0:
+                return None
+
+            json_length, offset = self._mc_read_varint_from_bytes(data, offset)
+            json_text = data[offset : offset + json_length].decode("utf-8", errors="ignore")
+            payload = json.loads(json_text)
+            if not isinstance(payload, dict):
+                return None
+
+            version_data = payload.get("version")
+            version = ""
+            if isinstance(version_data, dict):
+                version = str(version_data.get("name") or version_data.get("protocol") or "").strip()
+            else:
+                version = str(version_data or "").strip()
+
+            motd_lines: list[str] = []
+            description = payload.get("description")
+            if isinstance(description, dict):
+                clean = description.get("clean")
+                if isinstance(clean, list):
+                    motd_lines = [self._clean_mc_text(x) for x in clean if self._clean_mc_text(x)]
+                elif isinstance(clean, str) and clean.strip():
+                    motd_lines = [self._clean_mc_text(clean)]
+                else:
+                    text = self._mc_description_to_text(description)
+                    if text:
+                        motd_lines = [self._clean_mc_text(text)]
+            elif isinstance(description, list):
+                for item in description:
+                    text = self._mc_description_to_text(item)
+                    if text:
+                        motd_lines.append(self._clean_mc_text(text))
+            elif isinstance(description, str) and description.strip():
+                motd_lines = [self._clean_mc_text(description)]
+
+            players = payload.get("players")
+            if not isinstance(players, dict):
+                players = {}
+            players_online = int(self._parse_number(players.get("online"), 0))
+            players_max = int(self._parse_number(players.get("max"), 0))
+            player_names: list[str] = []
+            sample = players.get("sample")
+            if isinstance(sample, list):
+                for item in sample:
+                    name_raw = ""
+                    if isinstance(item, dict):
+                        name_raw = item.get("name") or item.get("text") or ""
+                    elif isinstance(item, str):
+                        name_raw = item
+                    cleaned_name = self._clean_mc_text(name_raw)
+                    if cleaned_name:
+                        player_names.append(cleaned_name)
+
+            return SimpleNamespace(
+                online=True,
+                host=host,
+                port=port,
+                server_name=host,
+                software="",
+                version=self._clean_mc_text(version) or "未知",
+                motd_lines=motd_lines,
+                player_count=players_online,
+                max_players=players_max,
+                players=player_names,
+                ping_ms=ping_ms,
+            )
         except Exception as exc:
-            self._debug("mc status api invalid json: %s", exc)
+            self._debug("mc status ping failed: %s", exc)
             return None
-
-        if not isinstance(payload, dict):
-            return None
-
-        online = bool(payload.get("online"))
-        players = payload.get("players") if isinstance(payload.get("players"), dict) else {}
-        players_online = int(self._parse_number(players.get("online"), 0))
-        players_max = int(self._parse_number(players.get("max"), 0))
-
-        version_data = payload.get("version")
-        version = ""
-        if isinstance(version_data, dict):
-            version = str(version_data.get("name") or version_data.get("raw") or "").strip()
-        else:
-            version = str(version_data or "").strip()
-
-        motd_data = payload.get("motd")
-        motd_clean: list[str] = []
-        if isinstance(motd_data, dict):
-            clean = motd_data.get("clean")
-            if isinstance(clean, list):
-                motd_clean = [self._clean_mc_text(x) for x in clean if self._clean_mc_text(x)]
-            elif isinstance(clean, str) and clean.strip():
-                cleaned = self._clean_mc_text(clean)
-                motd_clean = [cleaned] if cleaned else []
-        elif isinstance(motd_data, str) and motd_data.strip():
-            cleaned = self._clean_mc_text(motd_data)
-            motd_clean = [cleaned] if cleaned else []
-
-        player_list: list[Any] = []
-        if isinstance(players.get("list"), list):
-            player_list.extend(players.get("list"))
-        if isinstance(players.get("sample"), list):
-            player_list.extend(players.get("sample"))
-        if isinstance(payload.get("players_list"), list):
-            player_list.extend(payload.get("players_list"))
-        player_names: list[str] = []
-        for item in player_list:
-            name_raw = item
-            if isinstance(item, dict):
-                name_raw = (
-                    item.get("name")
-                    or item.get("username")
-                    or item.get("player")
-                    or item.get("displayName")
-                    or ""
-                )
-            elif isinstance(item, str):
-                # Handle stringified dict payloads like "{'name': 'xxx', 'uuid': '...'}"
-                m = re.search(r"[\"']name[\"']\s*:\s*[\"']([^\"']+)[\"']", item)
-                if m:
-                    name_raw = m.group(1)
-            cleaned_name = self._clean_mc_text(name_raw)
-            if cleaned_name:
-                player_names.append(cleaned_name)
-
-        return SimpleNamespace(
-            online=online,
-            host=str(payload.get("ip") or host),
-            port=int(self._parse_number(payload.get("port"), port)) or port,
-            server_name=self._clean_mc_text(payload.get("hostname") or payload.get("ip") or host),
-            software=self._clean_mc_text(payload.get("software") or ""),
-            version=self._clean_mc_text(version),
-            motd_lines=motd_clean,
-            player_count=players_online,
-            max_players=players_max,
-            players=player_names,
-            ping_ms=self._parse_number(
-                (payload.get("debug") or {}).get("ping")
-                if isinstance(payload.get("debug"), dict)
-                else payload.get("latency") or payload.get("ping"),
-                0.0,
-            ),
-        )
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     def _is_http_url(self, text: str) -> bool:
         return text.startswith("http://") or text.startswith("https://")
